@@ -16,7 +16,7 @@ import {
   DbEdge,
   DbCitation,
 } from "../db";
-import { parseDbtManifest, findManifestPath } from "./dbtParser";
+import { parseDbtManifest, findManifestPath, parseDbtProjectFallback } from "./dbtParser";
 import { parseAirflowDags } from "./airflowParser";
 import { linkCrossRepo } from "./linker";
 import { enrichWithSnowflakeMetadata } from "./snowflakeMetadata";
@@ -146,48 +146,69 @@ export class Indexer {
       return;
     }
 
-    // Run dbt compile
+    // Try to run dbt compile, but don't fail if it doesn't work
+    // (fallback parser will be used in stageParseManifest)
     this.updateProgress("dbt_compile", 20, "Running dbt compile...");
     
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn("dbt", ["compile"], {
-        cwd: this.config.dbtPath,
-        shell: true,
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const proc = spawn("dbt", ["compile"], {
+          cwd: this.config.dbtPath,
+          shell: true,
+        });
+
+        let output = "";
+        proc.stdout?.on("data", (data) => {
+          output += data.toString();
+        });
+        proc.stderr?.on("data", (data) => {
+          output += data.toString();
+        });
+
+        proc.on("close", (code) => {
+          if (code === 0) {
+            resolve();
+          } else {
+            reject(new Error(`dbt compile failed: ${output}`));
+          }
+        });
+
+        proc.on("error", reject);
       });
 
-      let output = "";
-      proc.stdout?.on("data", (data) => {
-        output += data.toString();
-      });
-      proc.stderr?.on("data", (data) => {
-        output += data.toString();
-      });
-
-      proc.on("close", (code) => {
-        if (code === 0) {
-          resolve();
-        } else {
-          reject(new Error(`dbt compile failed: ${output}`));
-        }
-      });
-
-      proc.on("error", reject);
-    });
-
-    this.updateProgress("dbt_compile", 100, "dbt compile complete");
+      this.updateProgress("dbt_compile", 100, "dbt compile complete");
+    } catch (error) {
+      // dbt compile failed, but we can continue with fallback parsing
+      console.warn("dbt compile failed, will use fallback SQL file parsing:", error);
+      this.updateProgress("dbt_compile", 100, "dbt compile unavailable, will use fallback parser");
+    }
   }
 
   private async stageParseManifest(): Promise<void> {
-    this.updateProgress("parse_manifest", 0, "Loading manifest.json...");
+    this.updateProgress("parse_manifest", 0, "Looking for manifest.json...");
 
     const manifestPath = findManifestPath(this.config.dbtPath);
-    if (!manifestPath) {
-      throw new Error("manifest.json not found after dbt compile");
-    }
-
-    this.updateProgress("parse_manifest", 30, "Parsing dbt nodes...");
     
-    const result = parseDbtManifest(manifestPath, this.config.dbtPath);
+    let result;
+    if (manifestPath) {
+      // Use manifest.json for parsing (preferred)
+      this.updateProgress("parse_manifest", 30, "Parsing dbt manifest...");
+      result = parseDbtManifest(manifestPath, this.config.dbtPath);
+    } else {
+      // Fallback: parse SQL files directly without manifest
+      this.updateProgress("parse_manifest", 30, "No manifest found, using fallback SQL parser...");
+      try {
+        result = parseDbtProjectFallback(this.config.dbtPath);
+        this.updateProgress(
+          "parse_manifest",
+          50,
+          `Fallback parser: found ${result.nodes.length} models from SQL files`
+        );
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to parse dbt project (no manifest.json and fallback failed): ${errorMessage}`);
+      }
+    }
     
     this.allNodes.push(...result.nodes);
     this.allEdges.push(...result.edges);

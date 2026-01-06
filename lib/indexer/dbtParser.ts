@@ -1,6 +1,7 @@
-import { readFileSync, existsSync } from "fs";
-import { join, relative } from "path";
+import { readFileSync, existsSync, readdirSync, statSync } from "fs";
+import { join, relative, basename, dirname } from "path";
 import { v4 as uuid } from "uuid";
+import * as yaml from "js-yaml";
 import type { GraphNode, GraphEdge, Citation, NodeType, NodeSubtype } from "../types";
 
 // dbt manifest.json types (simplified)
@@ -214,6 +215,7 @@ export function parseDbtManifest(manifestPath: string, repoPath: string): DbtPar
 export function findManifestPath(dbtProjectPath: string): string | null {
   const candidates = [
     join(dbtProjectPath, "target", "manifest.json"),
+    join(dbtProjectPath, "main_artifacts", "manifest.json"),
     join(dbtProjectPath, "manifest.json"),
   ];
 
@@ -266,5 +268,511 @@ export function parseDbtProject(projectPath: string): {
   }
 
   return { name, version, modelPaths, seedPaths };
+}
+
+// ============================================================================
+// FALLBACK PARSER - Parse dbt project from SQL files without manifest.json
+// ============================================================================
+
+interface DbtProjectConfig {
+  name: string;
+  version: string;
+  modelPaths: string[];
+  seedPaths: string[];
+  snapshotPaths: string[];
+  targetSchema: string;
+  targetDatabase: string;
+}
+
+interface SourceDefinition {
+  sourceName: string;
+  database: string;
+  schema: string;
+  tables: Array<{
+    name: string;
+    description?: string;
+    columns?: Array<{ name: string; description?: string; data_type?: string }>;
+  }>;
+  filePath: string;
+}
+
+interface DbtReference {
+  type: "ref" | "source";
+  modelName?: string;
+  sourceName?: string;
+  tableName?: string;
+}
+
+interface DbtModelConfig {
+  materialized?: string;
+  tags?: string[];
+  schema?: string;
+  alias?: string;
+}
+
+/**
+ * Parse dbt_project.yml using proper YAML parsing
+ */
+export function parseDbtProjectYml(projectPath: string): DbtProjectConfig | null {
+  const projectFile = join(projectPath, "dbt_project.yml");
+  if (!existsSync(projectFile)) {
+    return null;
+  }
+
+  try {
+    const content = readFileSync(projectFile, "utf-8");
+    const parsed = yaml.load(content) as Record<string, unknown>;
+
+    // Extract model-paths (dbt 1.0+) or source-paths (legacy)
+    let modelPaths = (parsed["model-paths"] || parsed["source-paths"] || ["models"]) as string[];
+    if (!Array.isArray(modelPaths)) modelPaths = ["models"];
+
+    // Extract seed-paths
+    let seedPaths = (parsed["seed-paths"] || parsed["data-paths"] || ["seeds"]) as string[];
+    if (!Array.isArray(seedPaths)) seedPaths = ["seeds"];
+
+    // Extract snapshot-paths
+    let snapshotPaths = (parsed["snapshot-paths"] || ["snapshots"]) as string[];
+    if (!Array.isArray(snapshotPaths)) snapshotPaths = ["snapshots"];
+
+    return {
+      name: (parsed["name"] as string) || "unknown",
+      version: String(parsed["version"] || "unknown"),
+      modelPaths,
+      seedPaths,
+      snapshotPaths,
+      targetSchema: (parsed["target-schema"] as string) || "public",
+      targetDatabase: (parsed["target-database"] as string) || "analytics",
+    };
+  } catch (error) {
+    console.warn("Failed to parse dbt_project.yml:", error);
+    return null;
+  }
+}
+
+/**
+ * Recursively discover all .sql files in a directory
+ */
+export function discoverSqlFiles(basePath: string, modelPaths: string[]): string[] {
+  const sqlFiles: string[] = [];
+
+  function walkDir(dir: string): void {
+    if (!existsSync(dir)) return;
+
+    try {
+      const entries = readdirSync(dir);
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+        const stat = statSync(fullPath);
+
+        if (stat.isDirectory()) {
+          walkDir(fullPath);
+        } else if (entry.endsWith(".sql")) {
+          sqlFiles.push(fullPath);
+        }
+      }
+    } catch (error) {
+      console.warn(`Failed to read directory ${dir}:`, error);
+    }
+  }
+
+  for (const modelPath of modelPaths) {
+    const fullPath = join(basePath, modelPath);
+    walkDir(fullPath);
+  }
+
+  return sqlFiles;
+}
+
+/**
+ * Discover and parse all sources.yml / _sources.yml files
+ */
+export function discoverSourcesYaml(basePath: string, modelPaths: string[]): SourceDefinition[] {
+  const sources: SourceDefinition[] = [];
+  const yamlFiles: string[] = [];
+
+  function walkDir(dir: string): void {
+    if (!existsSync(dir)) return;
+
+    try {
+      const entries = readdirSync(dir);
+      for (const entry of entries) {
+        const fullPath = join(dir, entry);
+        const stat = statSync(fullPath);
+
+        if (stat.isDirectory()) {
+          walkDir(fullPath);
+        } else if (
+          entry === "sources.yml" ||
+          entry === "_sources.yml" ||
+          entry.endsWith("_sources.yml")
+        ) {
+          yamlFiles.push(fullPath);
+        }
+      }
+    } catch (error) {
+      console.warn(`Failed to read directory ${dir}:`, error);
+    }
+  }
+
+  for (const modelPath of modelPaths) {
+    walkDir(join(basePath, modelPath));
+  }
+
+  for (const yamlFile of yamlFiles) {
+    const parsed = parseSourcesYaml(yamlFile);
+    sources.push(...parsed);
+  }
+
+  return sources;
+}
+
+/**
+ * Parse a single sources.yml file
+ */
+export function parseSourcesYaml(yamlPath: string): SourceDefinition[] {
+  const sources: SourceDefinition[] = [];
+
+  try {
+    const content = readFileSync(yamlPath, "utf-8");
+    const parsed = yaml.load(content) as { sources?: unknown[] };
+
+    if (!parsed?.sources || !Array.isArray(parsed.sources)) {
+      return sources;
+    }
+
+    for (const source of parsed.sources) {
+      const s = source as Record<string, unknown>;
+      const sourceName = (s.name as string) || "";
+      const database = (s.database as string) || "";
+      const schema = (s.schema as string) || sourceName;
+
+      const tables: SourceDefinition["tables"] = [];
+      if (Array.isArray(s.tables)) {
+        for (const table of s.tables) {
+          const t = table as Record<string, unknown>;
+          const columns: Array<{ name: string; description?: string; data_type?: string }> = [];
+
+          if (Array.isArray(t.columns)) {
+            for (const col of t.columns) {
+              const c = col as Record<string, unknown>;
+              columns.push({
+                name: (c.name as string) || "",
+                description: c.description as string | undefined,
+                data_type: c.data_type as string | undefined,
+              });
+            }
+          }
+
+          tables.push({
+            name: (t.name as string) || "",
+            description: t.description as string | undefined,
+            columns: columns.length > 0 ? columns : undefined,
+          });
+        }
+      }
+
+      sources.push({
+        sourceName,
+        database,
+        schema,
+        tables,
+        filePath: yamlPath,
+      });
+    }
+  } catch (error) {
+    console.warn(`Failed to parse sources.yml at ${yamlPath}:`, error);
+  }
+
+  return sources;
+}
+
+/**
+ * Extract ref() and source() calls from SQL content
+ */
+export function extractDbtReferences(sql: string): DbtReference[] {
+  const references: DbtReference[] = [];
+
+  // Match {{ ref('model_name') }} or {{ ref("model_name") }}
+  // Also handles whitespace variations
+  const refPattern = /\{\{\s*ref\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\}\}/g;
+  let match;
+  while ((match = refPattern.exec(sql)) !== null) {
+    references.push({
+      type: "ref",
+      modelName: match[1],
+    });
+  }
+
+  // Match {{ source('source_name', 'table_name') }}
+  const sourcePattern = /\{\{\s*source\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*\)\s*\}\}/g;
+  while ((match = sourcePattern.exec(sql)) !== null) {
+    references.push({
+      type: "source",
+      sourceName: match[1],
+      tableName: match[2],
+    });
+  }
+
+  return references;
+}
+
+/**
+ * Extract config() block from SQL content
+ */
+export function extractDbtConfig(sql: string): DbtModelConfig {
+  const config: DbtModelConfig = {};
+
+  // Match {{ config(...) }} - handle multi-line
+  const configPattern = /\{\{\s*config\s*\(([\s\S]*?)\)\s*\}\}/;
+  const match = configPattern.exec(sql);
+
+  if (!match) return config;
+
+  const configContent = match[1];
+
+  // Extract materialized
+  const materializedMatch = /materialized\s*=\s*['"]([^'"]+)['"]/i.exec(configContent);
+  if (materializedMatch) {
+    config.materialized = materializedMatch[1];
+  }
+
+  // Extract tags (can be a list)
+  const tagsMatch = /tags\s*=\s*\[([^\]]*)\]/i.exec(configContent);
+  if (tagsMatch) {
+    const tagsContent = tagsMatch[1];
+    const tagPattern = /['"]([^'"]+)['"]/g;
+    const tags: string[] = [];
+    let tagMatch;
+    while ((tagMatch = tagPattern.exec(tagsContent)) !== null) {
+      tags.push(tagMatch[1]);
+    }
+    if (tags.length > 0) {
+      config.tags = tags;
+    }
+  }
+
+  // Single tag
+  const singleTagMatch = /tags\s*=\s*['"]([^'"]+)['"]/i.exec(configContent);
+  if (singleTagMatch && !config.tags) {
+    config.tags = [singleTagMatch[1]];
+  }
+
+  // Extract schema
+  const schemaMatch = /schema\s*=\s*['"]([^'"]+)['"]/i.exec(configContent);
+  if (schemaMatch) {
+    config.schema = schemaMatch[1];
+  }
+
+  // Extract alias
+  const aliasMatch = /alias\s*=\s*['"]([^'"]+)['"]/i.exec(configContent);
+  if (aliasMatch) {
+    config.alias = aliasMatch[1];
+  }
+
+  return config;
+}
+
+/**
+ * Infer resource type from file path
+ */
+function inferResourceType(filePath: string, projectPath: string): "model" | "seed" | "snapshot" {
+  const relativePath = relative(projectPath, filePath).toLowerCase();
+
+  if (relativePath.includes("snapshot")) {
+    return "snapshot";
+  }
+  if (relativePath.includes("seed")) {
+    return "seed";
+  }
+  return "model";
+}
+
+/**
+ * Main fallback parser - parse dbt project from SQL files without manifest.json
+ */
+export function parseDbtProjectFallback(projectPath: string): DbtParseResult {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  const citations: Citation[] = [];
+
+  // Parse project configuration
+  const projectConfig = parseDbtProjectYml(projectPath);
+  if (!projectConfig) {
+    throw new Error(`No dbt_project.yml found at ${projectPath}`);
+  }
+
+  const { modelPaths, seedPaths, snapshotPaths, targetDatabase, targetSchema } = projectConfig;
+
+  // Combine all paths for discovery
+  const allPaths = [...modelPaths, ...seedPaths, ...snapshotPaths];
+
+  // Discover source definitions first
+  const sourceDefs = discoverSourcesYaml(projectPath, modelPaths);
+
+  // Create source nodes
+  const sourceNodeMap = new Map<string, string>(); // "source_name.table_name" -> node id
+  for (const sourceDef of sourceDefs) {
+    for (const table of sourceDef.tables) {
+      const sourceKey = `${sourceDef.sourceName}.${table.name}`;
+      const fqn = buildFQN(
+        sourceDef.database || targetDatabase,
+        sourceDef.schema,
+        table.name
+      );
+      sourceNodeMap.set(sourceKey, fqn);
+
+      const node: GraphNode = {
+        id: fqn,
+        name: table.name,
+        type: "source",
+        subtype: "dbt_source",
+        repo: "rippling-dbt",
+        metadata: {
+          schema: sourceDef.schema,
+          database: sourceDef.database || targetDatabase,
+          description: table.description,
+          columns: table.columns?.map((c) => ({
+            name: c.name,
+            type: c.data_type || "unknown",
+            description: c.description,
+          })),
+          filePath: relative(projectPath, sourceDef.filePath),
+        },
+      };
+      nodes.push(node);
+
+      citations.push({
+        id: uuid(),
+        nodeId: fqn,
+        filePath: sourceDef.filePath,
+      });
+    }
+  }
+
+  // Discover all SQL files
+  const sqlFiles = discoverSqlFiles(projectPath, allPaths);
+
+  // First pass: create all model nodes
+  const modelNodeMap = new Map<string, string>(); // model name -> node id
+  const modelFileMap = new Map<string, { filePath: string; sql: string; config: DbtModelConfig }>();
+
+  for (const sqlFile of sqlFiles) {
+    const modelName = basename(sqlFile, ".sql");
+    const sql = readFileSync(sqlFile, "utf-8");
+    const config = extractDbtConfig(sql);
+    const resourceType = inferResourceType(sqlFile, projectPath);
+
+    // Determine schema (from config or default based on file path)
+    const relPath = relative(projectPath, sqlFile);
+    const pathParts = dirname(relPath).split("/");
+    const inferredSchema = config.schema || pathParts[pathParts.length - 1] || targetSchema;
+
+    const tableName = config.alias || modelName;
+    const fqn = buildFQN(targetDatabase, inferredSchema, tableName);
+
+    modelNodeMap.set(modelName, fqn);
+    modelFileMap.set(modelName, { filePath: sqlFile, sql, config });
+
+    const node: GraphNode = {
+      id: fqn,
+      name: tableName,
+      type: mapResourceTypeToNodeType(resourceType),
+      subtype: mapResourceTypeToSubtype(resourceType),
+      repo: "rippling-dbt",
+      metadata: {
+        schema: inferredSchema,
+        database: targetDatabase,
+        materialization: config.materialized,
+        tags: config.tags,
+        filePath: relPath,
+      },
+    };
+    nodes.push(node);
+
+    citations.push({
+      id: uuid(),
+      nodeId: fqn,
+      filePath: sqlFile,
+    });
+  }
+
+  // Second pass: create edges from refs and sources
+  for (const [modelName, { sql }] of modelFileMap.entries()) {
+    const toFqn = modelNodeMap.get(modelName);
+    if (!toFqn) continue;
+
+    const references = extractDbtReferences(sql);
+
+    for (const ref of references) {
+      if (ref.type === "ref" && ref.modelName) {
+        const fromFqn = modelNodeMap.get(ref.modelName);
+        if (fromFqn) {
+          edges.push({
+            id: uuid(),
+            from: fromFqn,
+            to: toFqn,
+            type: "ref",
+          });
+        } else {
+          // Create placeholder node for unknown ref
+          const placeholderFqn = buildFQN(targetDatabase, targetSchema, ref.modelName);
+          if (!nodes.some((n) => n.id === placeholderFqn)) {
+            nodes.push({
+              id: placeholderFqn,
+              name: ref.modelName,
+              type: "model",
+              subtype: "dbt_model",
+              repo: "rippling-dbt",
+              metadata: {
+                schema: targetSchema,
+                database: targetDatabase,
+                description: "(Referenced model - source file not found)",
+              },
+            });
+            modelNodeMap.set(ref.modelName, placeholderFqn);
+          }
+          edges.push({
+            id: uuid(),
+            from: placeholderFqn,
+            to: toFqn,
+            type: "ref",
+          });
+        }
+      } else if (ref.type === "source" && ref.sourceName && ref.tableName) {
+        const sourceKey = `${ref.sourceName}.${ref.tableName}`;
+        let fromFqn = sourceNodeMap.get(sourceKey);
+
+        if (!fromFqn) {
+          // Create placeholder source node
+          fromFqn = buildFQN(targetDatabase, ref.sourceName, ref.tableName);
+          if (!nodes.some((n) => n.id === fromFqn)) {
+            nodes.push({
+              id: fromFqn,
+              name: ref.tableName,
+              type: "source",
+              subtype: "dbt_source",
+              repo: "rippling-dbt",
+              metadata: {
+                schema: ref.sourceName,
+                database: targetDatabase,
+                description: "(Referenced source - definition not found in sources.yml)",
+              },
+            });
+            sourceNodeMap.set(sourceKey, fromFqn);
+          }
+        }
+
+        edges.push({
+          id: uuid(),
+          from: fromFqn,
+          to: toFqn,
+          type: "source",
+        });
+      }
+    }
+  }
+
+  return { nodes, edges, citations };
 }
 

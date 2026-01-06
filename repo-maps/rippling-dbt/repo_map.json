@@ -1,0 +1,456 @@
+{
+  "repo": {
+    "name": "rippling_dbt",
+    "root": "/Users/will/Documents/GitHub/rippling-dbt",
+    "primary_languages": ["SQL", "Jinja2", "YAML"],
+    "key_dirs": [
+      "models/sources/",
+      "models/marts/",
+      "macros/",
+      "snapshots/",
+      "seeds/",
+      "tests/"
+    ],
+    "citations": [
+      {"file": "dbt_project.yml", "lines": "1-22", "note": "Project name and path configs"}
+    ]
+  },
+  "dbt": {
+    "present": true,
+    "project_files": {
+      "dbt_project_yml": "dbt_project.yml",
+      "packages_yml": "packages.yml",
+      "profiles_hint": "profiles.yml (Snowflake, targets: dev, dev_prod)",
+      "citations": [
+        {"file": "dbt_project.yml", "lines": "1-10", "note": "Project config header"},
+        {"file": "packages.yml", "lines": "1-30", "note": "Package dependencies"},
+        {"file": "profiles.yml", "lines": "1-27", "note": "Snowflake connection config"}
+      ]
+    },
+    "models_dirs": ["models/sources/", "models/marts/"],
+    "macros_dirs": ["macros/"],
+    "sources": [
+      {
+        "name": "SFDC",
+        "schema": "SFDC",
+        "database": "PROD_RIPPLING_DWH (prod) / DEV_RIPPLING_DB (dev)",
+        "tables_count": 147,
+        "key_tables": ["ACCOUNT", "CONTACT", "LEAD", "OPPORTUNITY", "USER"],
+        "citations": [{"file": "models/sources/sfdc/sources.yml", "lines": "16-147"}]
+      },
+      {
+        "name": "MONGO_CORE",
+        "schema": "mongo_core",
+        "database": "PROD_RIPPLING_DWH (prod) / DEV_RIPPLING_DB (dev)",
+        "tables_count": 595,
+        "key_tables": ["COMPANY", "ROLE_WITH_COMPANY", "BOOKING_LINE_ITEM", "INVOICE", "USER"],
+        "citations": [{"file": "models/sources/mongo_core/sources.yml", "lines": "1-595"}]
+      },
+      {
+        "name": "MECH_OUTREACH",
+        "schema": "MECH_OUTREACH",
+        "database": "PROD_DATALAKE_DB",
+        "tables_count": 23,
+        "key_tables": ["APOLLO_LEAD_ENRICHMENT", "ZOOMINFO_LEAD_ENRICHMENT", "COGNISM_LEAD_ENRICHMENT", "CLEARBIT_LEAD_SEARCH"],
+        "citations": [{"file": "models/sources/mech_outreach/sources.yml"}]
+      },
+      {
+        "name": "OUTREACH",
+        "schema": "OUTREACH",
+        "database": "PROD_RIPPLING_DWH",
+        "key_tables": ["SEQUENCE", "SEQUENCE_STATE", "PROSPECT", "MAILING"],
+        "citations": [{"file": "models/sources/outreach/sources.yml"}]
+      },
+      {
+        "name": "GOOGLE_SHEETS",
+        "schema": "GOOGLE_SHEETS",
+        "database": "PROD_RIPPLING_DWH",
+        "tables_count": 124,
+        "key_tables": ["MO_AUDIENCE_CONFIG", "SDR_QUOTA_SCHEDULE", "SALES_COMPENSATION_ACCELERATORS"],
+        "citations": [{"file": "models/sources/google_sheets/sources.yml"}]
+      },
+      {
+        "name": "GROWTH",
+        "schema": "GROWTH",
+        "database": "PROD_RIPPLING_DWH",
+        "key_tables": ["G2_EVENTS", "GARTNER_EVENTS", "DEMANDBASE_COMPANIES"],
+        "citations": [{"file": "models/sources/growth/sources.yml"}]
+      },
+      {
+        "name": "JIRA",
+        "schema": "JIRA",
+        "database": "PROD_RIPPLING_DWH",
+        "tables_count": 78,
+        "citations": [{"file": "models/sources/jira/sources.yml"}]
+      },
+      {
+        "name": "GONG",
+        "schema": "GONG",
+        "database": "PROD_RIPPLING_DWH",
+        "tables_count": 7,
+        "citations": [{"file": "models/sources/gong/sources.yml"}]
+      }
+    ],
+    "models": [
+      {
+        "name": "stg_sfdc__accounts",
+        "path": "models/sources/sfdc/stg_sfdc__accounts.sql",
+        "materialization": "view",
+        "schema": "stage",
+        "depends_on": {"refs": [], "sources": ["SFDC.ACCOUNT"]},
+        "citations": [{"file": "models/sources/sfdc/stg_sfdc__accounts.sql", "lines": "1-231"}]
+      },
+      {
+        "name": "mart_growth__lsw_lead_data",
+        "path": "models/marts/growth/mart/lsw/mart_growth__lsw_lead_data.sql",
+        "materialization": "view",
+        "schema": "growth",
+        "description": "Unified Lead Database - single source of truth for prospecting leads",
+        "depends_on": {"refs": ["mart_growth__lsw_lead_aggregate", "stg_growth__master_domain_sources"], "sources": []},
+        "citations": [{"file": "docs/mechanized_outreach_data_flow.md", "lines": "382-386"}]
+      },
+      {
+        "name": "mart_bookings__line_items_final",
+        "path": "models/marts/bookings/hourly/report/mart_bookings__line_items_final.sql",
+        "materialization": "view",
+        "schema": "bookings",
+        "tags": ["bookings", "bookings_hourly", "p1"],
+        "description": "Final bookings line items - P1 hourly refresh",
+        "depends_on": {"refs": ["int_bookings__line_items_step_final"], "sources": []},
+        "citations": [{"file": "dbt_project.yml", "lines": "159-170"}]
+      },
+      {
+        "name": "int_sales__sales_commissions",
+        "path": "models/marts/sales/intermediate/int_sales__sales_commissions.sql",
+        "materialization": "table",
+        "schema": "sales_stage",
+        "description": "Sales commission calculations by rep",
+        "citations": [{"file": "models/marts/sales/intermediate/schema.yml", "lines": "441-443"}]
+      },
+      {
+        "name": "int_sales__opportunities",
+        "path": "models/marts/sales/intermediate/int_sales__opportunities.sql",
+        "materialization": "table",
+        "schema": "sales_stage",
+        "description": "Opportunities with enriched data",
+        "citations": [{"file": "models/marts/sales/intermediate/"}]
+      }
+    ],
+    "manifest": {
+      "present": true,
+      "path": "target/manifest.json",
+      "how_to_generate": "dbt compile (or dbt build)",
+      "citations": [{"file": "target/manifest.json", "note": "Generated artifact"}]
+    }
+  },
+  "orchestration": {
+    "airflow": {
+      "present": false,
+      "dags": [],
+      "citations": []
+    },
+    "dagster": {
+      "present": false,
+      "note": "External Dagster orchestration detected via env_var references",
+      "env_var_references": ["DAGSTER_INSTANCE"],
+      "assets": [],
+      "jobs": [],
+      "citations": [
+        {"file": "dbt_project.yml", "lines": "72-76", "note": "DAGSTER_INSTANCE env var used for elementary config"}
+      ]
+    }
+  },
+  "sql_assets": [
+    {
+      "kind": "snapshot",
+      "path": "snapshots/",
+      "count": 50,
+      "naming_pattern": "ss_{domain}__{table}",
+      "examples": ["ss_mongo_core__customer_hris_metrics", "ss_finance__billing_invoices", "ss_growth__aud_base"],
+      "citations": [{"file": "snapshots/ss_mongo_core__customer_hris_metrics.sql", "lines": "1-24"}]
+    },
+    {
+      "kind": "test",
+      "path": "tests/",
+      "count": 32,
+      "categories": ["bookings", "finance", "generic", "sources"],
+      "citations": [{"file": "tests/", "note": "32 SQL test files"}]
+    },
+    {
+      "kind": "seed",
+      "path": "seeds/",
+      "count": 43,
+      "categories": ["common", "customer_support", "finance", "product_mappings"],
+      "citations": [{"file": "seeds/", "note": "CSV seed files"}]
+    }
+  ],
+  "conventions": {
+    "naming": {
+      "schemas": {
+        "sources_staging": "{target_schema}_stage",
+        "marts_intermediate": "{target_schema}_{domain}_stage",
+        "marts": "{target_schema}_{domain}",
+        "restricted": "{domain}_restricted (no prefix)",
+        "citations": [{"file": "macros/data_engg/generate_schema_name.sql", "lines": "1-24"}]
+      },
+      "tables": {
+        "staging": "stg_{source}__{table}",
+        "intermediate": "int_{domain}__{description}",
+        "mart": "mart_{domain}__{description}",
+        "report": "rpt_{domain}__{description}",
+        "snapshot": "ss_{domain}__{table}",
+        "census": "census_{domain}__{description}",
+        "citations": [
+          {"file": "models/sources/sfdc/stg_sfdc__accounts.sql", "note": "Example staging model"},
+          {"file": "models/marts/sales/intermediate/int_sales__opportunities.sql", "note": "Example intermediate model"}
+        ]
+      },
+      "models": "snake_case with double underscore separator between domain and description",
+      "citations": []
+    },
+    "grouping_rule_candidates": [
+      {
+        "rule": "domain",
+        "why": "Models are organized by business domain in directory structure and tags",
+        "examples": ["sales", "growth", "finance", "bookings", "marketing", "customer_experience"],
+        "citations": [{"file": "dbt_project.yml", "lines": "149-345"}]
+      },
+      {
+        "rule": "layer",
+        "why": "Models follow staging → intermediate → mart/report layering",
+        "examples": ["stg_", "int_", "mart_", "rpt_"],
+        "citations": [{"file": "models/marts/sales/", "note": "Contains intermediate/ and report/ subdirs"}]
+      },
+      {
+        "rule": "refresh_schedule",
+        "why": "Tags define refresh frequency for orchestration",
+        "examples": ["hourly", "daily", "every_6_hours", "bookings_hourly"],
+        "citations": [{"file": "dbt_project.yml", "lines": "243-279"}]
+      },
+      {
+        "rule": "priority",
+        "why": "P1 tag indicates mission-critical models",
+        "examples": ["p1"],
+        "citations": [{"file": "dbt_project.yml", "line": "159"}]
+      },
+      {
+        "rule": "source_system",
+        "why": "Staging models grouped by source system",
+        "examples": ["sfdc", "mongo_core", "outreach", "jira", "google_sheets"],
+        "citations": [{"file": "models/sources/", "note": "Directory per source system"}]
+      }
+    ],
+    "jinja_macros": [
+      {
+        "pattern": "{{ lookback_filter() }}",
+        "impact": "Limits data in dev to last N days (default 30) using _FIVETRAN_SYNCED",
+        "citations": [{"file": "macros/common/lookback_filter.sql", "lines": "1-6"}]
+      },
+      {
+        "pattern": "{{ simple_cte([('alias', 'ref_name'), ...]) }}",
+        "impact": "Generates WITH clause with multiple CTEs from refs",
+        "citations": [{"file": "macros/common/simple_cte.sql", "lines": "1-38"}]
+      },
+      {
+        "pattern": "{{ ref('model_name') }}",
+        "impact": "Standard dbt ref for model dependencies",
+        "citations": []
+      },
+      {
+        "pattern": "{{ source('source_name', 'table_name') }}",
+        "impact": "Standard dbt source for raw table access",
+        "citations": []
+      },
+      {
+        "pattern": "{{ remove_deleted_records('TABLE') }}",
+        "impact": "Filters out soft-deleted records via _FIVETRAN_DELETED",
+        "citations": [{"file": "models/sources/sfdc/stg_sfdc__accounts.sql", "line": "6"}]
+      },
+      {
+        "pattern": "{{ generate_schema_name(schema, node) }}",
+        "impact": "Custom schema generation - restricted schemas use raw name, others prepend target schema",
+        "citations": [{"file": "macros/data_engg/generate_schema_name.sql", "lines": "1-24"}]
+      },
+      {
+        "pattern": "{{ dbt_snow_mask.apply_masking_policy('models') }}",
+        "impact": "Applies Snowflake masking policies as post-hook",
+        "citations": [{"file": "dbt_project.yml", "lines": "79-81"}]
+      }
+    ],
+    "directory_structure": [
+      {
+        "pattern": "models/sources/{source_name}/",
+        "meaning": "Staging models for a specific source system",
+        "citations": [{"file": "models/sources/sfdc/", "note": "SFDC staging models"}]
+      },
+      {
+        "pattern": "models/marts/{domain}/intermediate/",
+        "meaning": "Intermediate transformation layer, materialized as tables",
+        "citations": [{"file": "models/marts/sales/intermediate/", "note": "Sales intermediate models"}]
+      },
+      {
+        "pattern": "models/marts/{domain}/report/",
+        "meaning": "Report layer, typically materialized as tables",
+        "citations": [{"file": "models/marts/sales/report/", "note": "Sales report models"}]
+      },
+      {
+        "pattern": "models/marts/{domain}/mart/",
+        "meaning": "Mart layer (alternative to report), typically views",
+        "citations": [{"file": "models/marts/growth/mart/", "note": "Growth mart models"}]
+      }
+    ]
+  },
+  "flow_candidates": [
+    {
+      "flow_name": "Unified Lead Database (Mechanized Outreach)",
+      "anchor_nodes": ["mart_growth__lsw_lead_data", "mart_growth__lsw_lead_aggregate"],
+      "why": "Central lead enrichment pipeline aggregating Apollo, ZoomInfo, Cognism, Clearbit data with intent signals",
+      "upstream_sources": ["MECH_OUTREACH", "GROWTH", "SFDC", "OUTREACH"],
+      "downstream_consumers": ["Email campaigns (Outreach.io)", "Direct mail (Lahlouh)", "AI email personalization", "CRM enrichment"],
+      "key_models": [
+        "stg_mech_outreach__apollo_lead_enrichment",
+        "stg_mech_outreach__zoominfo_lead_enrichment",
+        "int_growth__apollo_lead_enrichment_output",
+        "int_growth__zoominfo_lead_enrichment_output",
+        "mart_growth__lsw_lead_aggregate",
+        "mart_growth__lsw_lead_data",
+        "mart_growth__mo_eligible_audience"
+      ],
+      "citations": [{"file": "docs/mechanized_outreach_data_flow.md", "lines": "1-720"}]
+    },
+    {
+      "flow_name": "Bookings Pipeline",
+      "anchor_nodes": ["mart_bookings__line_items_final", "mart_bookings__daily_arr_seats"],
+      "why": "P1 priority, hourly refresh - critical revenue/ARR calculations",
+      "tags": ["bookings", "bookings_hourly", "p1"],
+      "key_models": [
+        "int_bookings__line_items_step1",
+        "int_bookings__line_items_step2",
+        "int_bookings__line_items_step3",
+        "int_bookings__line_items_step4",
+        "int_bookings__line_items_step_final",
+        "int_bookings__line_items_step_mart_ready",
+        "mart_bookings__line_items_final",
+        "mart_bookings__daily_arr_seats",
+        "mart_bookings__monthly_arr_seats"
+      ],
+      "citations": [
+        {"file": "dbt_project.yml", "lines": "159-170"},
+        {"file": "models/marts/bookings/hourly/", "note": "Hourly bookings models"}
+      ]
+    },
+    {
+      "flow_name": "Sales Commission",
+      "anchor_nodes": ["int_sales__sales_commissions"],
+      "why": "Sales rep compensation calculations feeding multiple downstream reports",
+      "key_models": [
+        "int_sales__sales_commissions",
+        "int_sales__sales_commissions_with_m0",
+        "rpt_sales__sdr_sales_compensation",
+        "rpt_sales__sdr_ic_sales_compensation",
+        "rpt_sales__sdr_leadership_sales_compensation",
+        "rpt_sales__am_sales_compensation_rollup"
+      ],
+      "citations": [
+        {"file": "models/marts/sales/intermediate/int_sales__sales_commissions.sql"},
+        {"file": "models/marts/sales/report/sales_commissions/", "note": "Sales commission reports"}
+      ]
+    },
+    {
+      "flow_name": "Sales Opportunities",
+      "anchor_nodes": ["int_sales__opportunities", "mart_sales__opportunities"],
+      "why": "Central opportunity data with product mix, stage history, and splits",
+      "key_models": [
+        "stg_sfdc__opportunity",
+        "int_sales__opportunities",
+        "int_sales__opportunities_stage_history",
+        "int_sales__opportunities_product_mix",
+        "int_sales__opportunity_line_items",
+        "int_sales__opportunity_splits"
+      ],
+      "citations": [{"file": "models/marts/sales/intermediate/"}]
+    },
+    {
+      "flow_name": "Finance Revenue Reporting",
+      "anchor_nodes": ["models/marts/finance/intermediate/", "models/marts/finance/report/"],
+      "why": "Large finance domain with 115 intermediate models and 208 reports",
+      "model_count": {"intermediate": 115, "report": 208},
+      "citations": [{"file": "models/marts/finance/", "note": "Finance mart structure"}]
+    },
+    {
+      "flow_name": "Customer Experience",
+      "anchor_nodes": ["models/marts/customer_experience/"],
+      "why": "CX metrics and reporting with 56 intermediate and 39 report models",
+      "model_count": {"intermediate": 56, "report": 39},
+      "citations": [{"file": "models/marts/customer_experience/"}]
+    }
+  ],
+  "known_ambiguities": [
+    {
+      "issue": "Dynamic schema names",
+      "where": "macros/data_engg/generate_schema_name.sql",
+      "impact": "Output schema depends on target (dev vs prod) and custom_schema_name config",
+      "recommended_next_step": "Parse generate_schema_name macro to determine actual schema for each model",
+      "citations": [{"file": "macros/data_engg/generate_schema_name.sql", "lines": "1-24"}]
+    },
+    {
+      "issue": "Dev lookback filter",
+      "where": "macros/common/lookback_filter.sql",
+      "impact": "Dev builds only include last 30 days of data by default (configurable via dev_lookback_days var)",
+      "recommended_next_step": "Account for DBT_LOOKBACK_DAYS env var and dev_lookback_days project var",
+      "citations": [{"file": "macros/common/lookback_filter.sql", "lines": "1-6"}]
+    },
+    {
+      "issue": "External orchestration",
+      "where": "dbt_project.yml env_var references",
+      "impact": "Dagster orchestration is external to this repo; schedule/job definitions not visible here",
+      "recommended_next_step": "Locate Dagster repository for complete orchestration graph",
+      "citations": [{"file": "dbt_project.yml", "lines": "72-76", "note": "DAGSTER_INSTANCE env var"}]
+    },
+    {
+      "issue": "Masking policies",
+      "where": "dbt_project.yml post-hooks",
+      "impact": "dbt_snow_mask policies applied as post-hook may affect column visibility",
+      "recommended_next_step": "Review dbt_snow_mask configuration for PII/sensitive column handling",
+      "citations": [{"file": "dbt_project.yml", "lines": "79-81"}]
+    },
+    {
+      "issue": "Legacy models",
+      "where": "models/sources/legacy_snowflake_repo_views/",
+      "impact": "Legacy views with custom post-hook for backwards compatibility",
+      "recommended_next_step": "Check if legacy models can be deprecated",
+      "citations": [{"file": "dbt_project.yml", "lines": "104-121"}]
+    },
+    {
+      "issue": "Incremental snapshots",
+      "where": "models/marts/incremental_snapshots/",
+      "impact": "Mart models using incremental materialization as pseudo-snapshots (no PK/date column)",
+      "recommended_next_step": "Treat these differently from standard dbt snapshots",
+      "citations": [{"file": "dbt_project.yml", "lines": "280-294"}]
+    }
+  ],
+  "variables": {
+    "dbt_prod_database": "PROD_DBT_DB",
+    "dbt_integration_database": "DEV_DBT_DB",
+    "default_source_db": "PROD_RIPPLING_DWH",
+    "dev_source_db": "DEV_RIPPLING_DB",
+    "dev_lookback_days": 30,
+    "citations": [{"file": "dbt_project.yml", "lines": "25-33"}]
+  },
+  "packages": [
+    {"name": "dbt_utils", "version": "1.1.1"},
+    {"name": "codegen", "version": "0.11.0"},
+    {"name": "dbt_date", "version": ">=0.9.0, <0.10.0"},
+    {"name": "salesforce_formula_utils", "version": ">=0.9.0, <0.10.0"},
+    {"name": "github", "version": ">=0.7.0, <0.8.0"},
+    {"name": "elementary", "version": "0.16.1"},
+    {"name": "dbt_snow_mask", "version": "0.2.4"}
+  ],
+  "metadata": {
+    "generated_at": "2026-01-06",
+    "dbt_version_required": ">=1.10.13, <2.0.0",
+    "warehouse": "Snowflake",
+    "citations": [{"file": "dbt_project.yml", "line": "5"}]
+  }
+}
+

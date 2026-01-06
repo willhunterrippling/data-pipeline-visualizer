@@ -1,0 +1,400 @@
+{
+  "repo": {
+    "name": "rippling-os",
+    "root": "/Users/will/Documents/rippling-os",
+    "primary_languages": ["Python", "SQL"],
+    "description": "SQL query toolkit for analyzing Rippling's marketing and sales pipeline data from Snowflake, Outreach, and Salesforce",
+    "key_dirs": [
+      "core/sql_functions/",
+      "core/references/",
+      "core/clients/snowflake/",
+      "sql/",
+      "temp/"
+    ],
+    "citations": [
+      {"file": "README.md", "lines": "1-66", "snippet": "An AI-powered data assistant that makes SQL analysis easy, accurate, and transparent."}
+    ]
+  },
+  "dbt": {
+    "present": false,
+    "note": "dbt models live in a separate repo. This toolkit queries resulting tables in prod_rippling_dwh and prod_dbt_db.",
+    "external_dbt_info": {
+      "target_databases": ["prod_rippling_dwh", "prod_dbt_db"],
+      "layer_structure": {
+        "staging": "stg_<source>__* (1261 models)",
+        "intermediate": "int_<domain>__* (e.g., int_sales__, int_marketing__)",
+        "marts": "Domain-specific marts (sales, finance, marketing, growth, etc.)"
+      }
+    },
+    "project_files": {
+      "dbt_project_yml": null,
+      "packages_yml": null,
+      "profiles_hint": null,
+      "citations": []
+    },
+    "models_dirs": [],
+    "macros_dirs": [],
+    "sources": [],
+    "models": [],
+    "manifest": {
+      "present": false,
+      "path": null,
+      "how_to_generate": "dbt project is in separate repo",
+      "citations": [
+        {"file": "data_map/dbt.md", "lines": "1-182", "snippet": "Mermaid diagram showing external dbt architecture with staging, intermediate, and mart layers"}
+      ]
+    }
+  },
+  "orchestration": {
+    "airflow": {
+      "present": false,
+      "dags": [],
+      "citations": []
+    },
+    "dagster": {
+      "present": false,
+      "assets": [],
+      "jobs": [],
+      "citations": []
+    }
+  },
+  "sql_assets": [
+    {
+      "kind": "stored_proc",
+      "path": "core/sql_functions/analyze_opp.sql",
+      "purpose": "Analyze opportunity attribution - links opportunities to Outreach sequences with 45-day attribution window",
+      "creates_or_writes": ["dev_rippling_db.growth_christian.analyze_opp"],
+      "reads_from": [
+        "prod_rippling_dwh.sfdc.opportunity",
+        "prod_rippling_dwh.sfdc.record_type",
+        "prod_rippling_dwh.sfdc.opportunity_contact_role",
+        "prod_rippling_dwh.outreach.sequence_state",
+        "prod_rippling_dwh.outreach.data_connection",
+        "prod_rippling_dwh.outreach.sequence_tag",
+        "prod_rippling_dwh.outreach.mailing",
+        "prod_rippling_dwh.outreach.sequence_step"
+      ],
+      "citations": [
+        {"file": "core/sql_functions/analyze_opp.sql", "lines": "1-129", "snippet": "ANALYZE OPP function with 45-day attribution window"}
+      ]
+    },
+    {
+      "kind": "stored_proc",
+      "path": "core/sql_functions/get_sequence_type.sql",
+      "purpose": "Classify sequences by type (CANNON, AUTOBOUND, CLASSIC_MO, etc.) and sub-type",
+      "creates_or_writes": ["dev_rippling_db.growth_christian.get_sequence_type"],
+      "reads_from": [
+        "prod_rippling_dwh.outreach.sequence",
+        "prod_rippling_dwh.outreach.sequence_tag"
+      ],
+      "citations": [
+        {"file": "core/sql_functions/get_sequence_type.sql", "lines": "1-145", "snippet": "Sequence type classification with hardcoded IDs for classic MO sequences"}
+      ]
+    },
+    {
+      "kind": "stored_proc",
+      "path": "core/sql_functions/get_sequence_volume.sql",
+      "purpose": "Calculate unique prospects and total sends for sequences within optional date range",
+      "creates_or_writes": ["dev_rippling_db.growth_christian.get_sequence_volume"],
+      "reads_from": [
+        "prod_rippling_dwh.outreach.sequence",
+        "prod_rippling_dwh.outreach.sequence_step",
+        "prod_rippling_dwh.outreach.mailing"
+      ],
+      "citations": [
+        {"file": "core/sql_functions/get_sequence_volume.sql", "lines": "1-97", "snippet": "Sequence volume calculation function"}
+      ]
+    },
+    {
+      "kind": "raw_sql",
+      "path": "sql/audience__cannon_template.sql",
+      "purpose": "Template query for building Cannon sequence audiences from mechanized_outreach_population",
+      "creates_or_writes": [],
+      "reads_from": [
+        "prod_rippling_dwh.growth.mechanized_outreach_population",
+        "prod_rippling_dwh.sfdc.account",
+        "prod_dbt_db.core_growth.mart_growth__mo_coresignal_multi_companies",
+        "prod_rippling_dwh.sfdc.lead"
+      ],
+      "citations": [
+        {"file": "sql/audience__cannon_template.sql", "lines": "1-44", "snippet": "Audience template with segment logic and persona filtering"}
+      ]
+    },
+    {
+      "kind": "raw_sql",
+      "path": "temp/nlaa/nlaa.sql",
+      "purpose": "Analyze 'no longer at account' contact history changes",
+      "creates_or_writes": [],
+      "reads_from": [
+        "PROD_RIPPLING_DWH.SFDC.CONTACT_HISTORY",
+        "PROD_RIPPLING_DWH.SFDC.USER"
+      ],
+      "citations": [
+        {"file": "temp/nlaa/nlaa.sql", "lines": "1-10"}
+      ]
+    },
+    {
+      "kind": "raw_sql",
+      "path": "temp/students_in_mo/check_graduation_date.sql",
+      "purpose": "Diagnostic query checking education fields in Outreach prospect table",
+      "creates_or_writes": [],
+      "reads_from": ["prod_rippling_dwh.outreach.prospect"],
+      "citations": [
+        {"file": "temp/students_in_mo/check_graduation_date.sql", "lines": "1-25"}
+      ]
+    }
+  ],
+  "data_sources": {
+    "primary_database": "prod_rippling_dwh",
+    "secondary_database": "prod_dbt_db",
+    "schemas": [
+      {
+        "name": "outreach",
+        "database": "prod_rippling_dwh",
+        "description": "Outreach.io data (sequences, prospects, mailings, events)",
+        "key_tables": [
+          "sequence",
+          "sequence_state",
+          "sequence_step",
+          "sequence_tag",
+          "prospect",
+          "mailing",
+          "event",
+          "data_connection"
+        ],
+        "citations": [
+          {"file": "core/references/OUTREACH_TABLES.md", "lines": "1-561"}
+        ]
+      },
+      {
+        "name": "sfdc",
+        "database": "prod_rippling_dwh",
+        "description": "Salesforce CRM data (opportunities, accounts, contacts, leads)",
+        "key_tables": [
+          "opportunity",
+          "opportunity_contact_role",
+          "account",
+          "contact",
+          "lead",
+          "campaign",
+          "campaign_member",
+          "task",
+          "user",
+          "record_type"
+        ],
+        "citations": [
+          {"file": "core/references/SFDC_TABLES.md", "lines": "1-1017"}
+        ]
+      },
+      {
+        "name": "growth",
+        "database": "prod_rippling_dwh",
+        "description": "Growth team tables including mechanized outreach population",
+        "key_tables": [
+          "mechanized_outreach_population",
+          "analyzed_replies",
+          "mo_reply_classification_results"
+        ],
+        "citations": [
+          {"file": "core/references/SNOWFLAKE_TABLES.md", "lines": "19-26"}
+        ]
+      },
+      {
+        "name": "core_growth",
+        "database": "prod_dbt_db",
+        "description": "dbt-generated growth models",
+        "key_tables": [
+          "mart_growth__mo_coresignal_multi_companies"
+        ],
+        "citations": [
+          {"file": "sql/audience__cannon_template.sql", "lines": "30-31"}
+        ]
+      }
+    ]
+  },
+  "conventions": {
+    "naming": {
+      "schemas": "snake_case (outreach, sfdc, growth)",
+      "tables": "snake_case with domain prefix for dbt models (stg_, int_, mart_)",
+      "models": "N/A - no dbt models in this repo",
+      "citations": [
+        {"file": "data_map/dbt.md", "lines": "79-116", "snippet": "Staging Layer: stg_sfdc__*, stg_mongo_core__*, etc."}
+      ]
+    },
+    "grouping_rule_candidates": [
+      {
+        "rule": "Group by data source schema",
+        "why": "Clear separation between Outreach, Salesforce, and Growth data",
+        "examples": ["prod_rippling_dwh.outreach.*", "prod_rippling_dwh.sfdc.*", "prod_rippling_dwh.growth.*"],
+        "citations": [
+          {"file": "core/references/SNOWFLAKE_TABLES.md", "lines": "14-65"}
+        ]
+      },
+      {
+        "rule": "Group by sequence tag (EmailProgram-*)",
+        "why": "Sequence tags define email program types - primary grouping for outreach analysis",
+        "examples": ["EmailProgram-MechOutreach", "EmailProgram-DirectMail", "EmailProgram-AutomatedIntent"],
+        "citations": [
+          {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "78-134"}
+        ]
+      },
+      {
+        "rule": "Group by opportunity stage (S1/S2)",
+        "why": "Pipeline stages are key metrics - S1=any opp, S2=sqo_qualified_date_c populated",
+        "examples": ["S1 (all opportunities)", "S2 (SQO qualified)"],
+        "citations": [
+          {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "19-75"}
+        ]
+      }
+    ],
+    "jinja_macros": [],
+    "directory_structure": [
+      {
+        "pattern": "core/sql_functions/",
+        "meaning": "Reusable SQL functions deployed to Snowflake as UDFs",
+        "citations": [{"file": "core/sql_functions/analyze_opp.sql", "lines": "19-25"}]
+      },
+      {
+        "pattern": "core/references/",
+        "meaning": "Schema documentation and metric definitions - source of truth",
+        "citations": [{"file": "core/references/README.md", "lines": "1-175"}]
+      },
+      {
+        "pattern": "temp/",
+        "meaning": "Ad-hoc analysis queries and outputs",
+        "citations": [{"file": ".cursorrules", "snippet": "temp/ - Temporary analysis queries and outputs"}]
+      },
+      {
+        "pattern": "sql/",
+        "meaning": "Template SQL for recurring query patterns",
+        "citations": [{"file": "sql/audience__cannon_template.sql", "lines": "1-44"}]
+      }
+    ],
+    "sql_patterns": {
+      "prospect_to_sfdc_linking": {
+        "description": "Link Outreach prospects to Salesforce contacts/leads via data_connection table",
+        "pattern": "JOIN data_connection dc ON dc.parent_id = prospect_id AND dc.type IN ('Contact', 'Lead')",
+        "citations": [
+          {"file": "core/sql_functions/analyze_opp.sql", "lines": "72-73"},
+          {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "230-241"}
+        ]
+      },
+      "attribution_window": {
+        "description": "45-day attribution window for linking sequences to opportunities",
+        "pattern": "ABS(DATEDIFF('day', sequence_state.created_at, opp_created_date)) <= 45",
+        "citations": [
+          {"file": "core/sql_functions/analyze_opp.sql", "lines": "77"},
+          {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "140-168"}
+        ]
+      },
+      "sequence_state_filtering": {
+        "description": "Filter to only count prospects who received emails",
+        "pattern": "WHERE ss.relationship_sequence_id IS NOT NULL AND ss.deliver_count > 0",
+        "citations": [
+          {"file": "core/sql_functions/analyze_opp.sql", "lines": "75-76"},
+          {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "243-249"}
+        ]
+      },
+      "soft_delete_filtering": {
+        "description": "Always exclude deleted records",
+        "pattern": "WHERE is_deleted = FALSE AND _fivetran_deleted = FALSE",
+        "citations": [
+          {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "251-257"}
+        ]
+      },
+      "case_sensitive_tags": {
+        "description": "Sequence tags are case-sensitive - use exact match",
+        "pattern": "WHERE tag_name = 'EmailProgram-MechOutreach'",
+        "anti_pattern": "WHERE LOWER(tag_name) = 'emailprogram-mechoutreach'",
+        "citations": [
+          {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "129-134"}
+        ]
+      }
+    }
+  },
+  "flow_candidates": [
+    {
+      "flow_name": "Mechanized Outreach Attribution",
+      "description": "Track email outreach sequences through to opportunity creation and qualification",
+      "anchor_nodes": [
+        "prod_rippling_dwh.growth.mechanized_outreach_population",
+        "prod_rippling_dwh.outreach.sequence_state",
+        "prod_rippling_dwh.outreach.mailing",
+        "prod_rippling_dwh.outreach.data_connection",
+        "prod_rippling_dwh.sfdc.opportunity",
+        "prod_rippling_dwh.sfdc.opportunity_contact_role"
+      ],
+      "why": "Primary use case - analyze_opp.sql implements full attribution from sequence to opportunity",
+      "key_metrics": ["Prospects per S1", "Prospects per S2", "S1→S2 conversion rate"],
+      "citations": [
+        {"file": "core/sql_functions/analyze_opp.sql", "lines": "1-129"},
+        {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "171-223"}
+      ]
+    },
+    {
+      "flow_name": "Sequence Classification",
+      "description": "Classify sequences by type (Cannon, Autobound, Classic MO) and sub-type",
+      "anchor_nodes": [
+        "prod_rippling_dwh.outreach.sequence",
+        "prod_rippling_dwh.outreach.sequence_tag"
+      ],
+      "why": "get_sequence_type.sql classifies sequences for analysis segmentation",
+      "citations": [
+        {"file": "core/sql_functions/get_sequence_type.sql", "lines": "56-144"}
+      ]
+    },
+    {
+      "flow_name": "Audience Building (Cannon)",
+      "description": "Build target audiences for Cannon email sequences from MO population",
+      "anchor_nodes": [
+        "prod_rippling_dwh.growth.mechanized_outreach_population",
+        "prod_rippling_dwh.sfdc.account",
+        "prod_rippling_dwh.sfdc.lead",
+        "prod_dbt_db.core_growth.mart_growth__mo_coresignal_multi_companies"
+      ],
+      "why": "audience__cannon_template.sql shows the audience building pattern",
+      "citations": [
+        {"file": "sql/audience__cannon_template.sql", "lines": "1-44"}
+      ]
+    }
+  ],
+  "known_ambiguities": [
+    {
+      "issue": "dbt models are in a separate repository",
+      "where": "References to prod_dbt_db tables",
+      "impact": "Cannot trace full lineage from raw sources through dbt transformations",
+      "recommended_next_step": "Obtain dbt manifest.json from the external dbt repo to complete lineage",
+      "citations": [
+        {"file": "data_map/dbt.md", "lines": "1-182", "snippet": "Diagram shows dbt architecture but actual project is external"}
+      ]
+    },
+    {
+      "issue": "Hardcoded sequence IDs in get_sequence_type.sql",
+      "where": "core/sql_functions/get_sequence_type.sql lines 71-77",
+      "impact": "classic_mo_not_personalized_ids and classic_mo_personalized_ids are hardcoded - may become stale",
+      "recommended_next_step": "Consider moving to a reference table or tag-based classification",
+      "citations": [
+        {"file": "core/sql_functions/get_sequence_type.sql", "lines": "71-77", "snippet": "SELECT column1::string AS sequence_id FROM VALUES ('13976'), ('13977')..."}
+      ]
+    },
+    {
+      "issue": "Sequence tags are case-sensitive and change over time",
+      "where": "All queries using sequence_tag table",
+      "impact": "Tag names like 'EmailProgram-MechOutreach' must match exactly",
+      "recommended_next_step": "Run tag discovery query periodically: SELECT DISTINCT tag_name FROM sequence_tag",
+      "citations": [
+        {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "129-134"}
+      ]
+    },
+    {
+      "issue": "S1/S2 definitions differ from stage names",
+      "where": "All opportunity analysis queries",
+      "impact": "S1=ALL opportunities (not filtered by stage), S2=sqo_qualified_date_c IS NOT NULL (not stage name)",
+      "recommended_next_step": "Always reference PIPELINE_METRICS_DEFINITIONS.md before writing opportunity queries",
+      "citations": [
+        {"file": "core/references/PIPELINE_METRICS_DEFINITIONS.md", "lines": "19-75"}
+      ]
+    }
+  ]
+}
+

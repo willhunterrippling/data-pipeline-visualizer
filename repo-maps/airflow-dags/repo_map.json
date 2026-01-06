@@ -1,0 +1,415 @@
+{
+  "repo": {
+    "name": "airflow-dags",
+    "root": "/Users/will/Documents/GitHub/airflow-dags",
+    "primary_languages": ["Python", "SQL", "YAML"],
+    "key_dirs": [
+      "airflow_dags/dags/",
+      "airflow_dags/resources/",
+      "airflow_dags/airflow_apps/",
+      "airflow_dags/great_expectations_tools/"
+    ],
+    "citations": [
+      {"file": "README.md", "lines": "1-12", "note": "Repository overview and transition notice to dbt"}
+    ]
+  },
+  "dbt": {
+    "present": false,
+    "project_files": {
+      "dbt_project_yml": null,
+      "packages_yml": null,
+      "profiles_hint": null,
+      "citations": [
+        {"file": "README.md", "lines": "1-2", "note": "States SQL transformations transitioning to rippling-dbt repo"}
+      ]
+    },
+    "models_dirs": [],
+    "macros_dirs": [],
+    "sources": [],
+    "models": [],
+    "manifest": {
+      "present": false,
+      "path": null,
+      "how_to_generate": "N/A - dbt not present in this repo. See https://github.com/Rippling/rippling-dbt",
+      "citations": []
+    }
+  },
+  "orchestration": {
+    "airflow": {
+      "present": true,
+      "dag_count": 346,
+      "domains": [
+        {"name": "growth", "dag_count": 131, "path": "airflow_dags/dags/growth/"},
+        {"name": "dwh", "dag_count": 58, "path": "airflow_dags/dags/dwh/"},
+        {"name": "analytics", "dag_count": 38, "path": "airflow_dags/dags/analytics/"},
+        {"name": "bizops", "dag_count": 25, "path": "airflow_dags/dags/bizops/"},
+        {"name": "risk", "dag_count": 19, "path": "airflow_dags/dags/risk/"},
+        {"name": "data_engg", "dag_count": 18, "path": "airflow_dags/dags/data_engg/"},
+        {"name": "finance", "dag_count": 10, "path": "airflow_dags/dags/finance/"},
+        {"name": "tests", "dag_count": 7, "path": "airflow_dags/dags/tests/"},
+        {"name": "product", "dag_count": 6, "path": "airflow_dags/dags/product/"},
+        {"name": "fivetran", "dag_count": 6, "path": "airflow_dags/dags/fivetran/"},
+        {"name": "mongo", "dag_count": 4, "path": "airflow_dags/dags/mongo/"},
+        {"name": "marketing", "dag_count": 3, "path": "airflow_dags/dags/marketing/"},
+        {"name": "finance_analytics", "dag_count": 3, "path": "airflow_dags/dags/finance_analytics/"},
+        {"name": "ads_platform", "dag_count": 3, "path": "airflow_dags/dags/ads_platform/"},
+        {"name": "sales", "dag_count": 2, "path": "airflow_dags/dags/sales/"},
+        {"name": "filing_factory", "dag_count": 2, "path": "airflow_dags/dags/filing_factory/"},
+        {"name": "datadog", "dag_count": 2, "path": "airflow_dags/dags/datadog/"},
+        {"name": "other", "dag_count": 9, "path": "various"}
+      ],
+      "dags_sample": [
+        {
+          "dag_id": "new_mech_outreach_leads_table_dag_with_suppression",
+          "path": "airflow_dags/dags/growth/new_mech_outreach_leads_table_dag_with_suppression.py",
+          "schedule_hint": "45 */4 * * *",
+          "tags": ["growth"],
+          "calls_dbt": false,
+          "citations": [{"file": "airflow_dags/dags/growth/new_mech_outreach_leads_table_dag_with_suppression.py", "lines": "36-43"}]
+        },
+        {
+          "dag_id": "dwh_dim_fact_booking_line_item",
+          "path": "airflow_dags/dags/dwh/dwh_dim_fact_booking_line_item.py",
+          "schedule_hint": "30 */2 * * *",
+          "tags": ["dwh"],
+          "calls_dbt": false,
+          "citations": [{"file": "airflow_dags/dags/dwh/dwh_dim_fact_booking_line_item.py", "lines": "27-35"}]
+        },
+        {
+          "dag_id": "risk_fact_ledger_entry",
+          "path": "airflow_dags/dags/risk/risk_fact_ledger_entry.py",
+          "schedule_hint": "*/20 * * * *",
+          "tags": ["risk"],
+          "calls_dbt": false,
+          "citations": [{"file": "airflow_dags/dags/risk/risk_fact_ledger_entry.py", "lines": "29-33"}]
+        },
+        {
+          "dag_id": "analytics_daily_load_mdm_metrics",
+          "path": "airflow_dags/dags/analytics/analytics_daily_load_mdm_metrics.py",
+          "schedule_hint": "0 23 * * *",
+          "tags": ["analytics"],
+          "calls_dbt": false,
+          "citations": [{"file": "airflow_dags/dags/analytics/analytics_daily_load_mdm_metrics.py", "lines": "23-31"}]
+        },
+        {
+          "dag_id": "load_filing_factory_tables",
+          "path": "airflow_dags/dags/filing_factory/filing_factory.py",
+          "schedule_hint": "30 5,17 * * *",
+          "tags": ["filing_factory"],
+          "calls_dbt": false,
+          "citations": [{"file": "airflow_dags/dags/filing_factory/filing_factory.py", "lines": "27-35"}]
+        }
+      ],
+      "dag_factory": {
+        "present": true,
+        "type": "data_quality",
+        "path": "airflow_dags/airflow_apps/data_quality/dagfactory.py",
+        "config_pattern": "airflow_dags/resources/*/data_quality_configs/*.yaml",
+        "citations": [
+          {"file": "airflow_dags/airflow_apps/data_quality/dagfactory.py", "lines": "1-45"},
+          {"file": "airflow_dags/dags/dq_dag_factory/generate_factory_dags.py", "lines": "1-45"}
+        ]
+      },
+      "citations": [
+        {"file": "README.md", "lines": "42-179", "note": "DAG generator usage and YAML structure"}
+      ]
+    },
+    "dagster": {
+      "present": false,
+      "assets": [],
+      "jobs": [],
+      "citations": []
+    }
+  },
+  "sql_assets": {
+    "total_count": 696,
+    "by_domain": [
+      {"domain": "growth", "count": 353, "path": "airflow_dags/resources/growth/sqls/"},
+      {"domain": "dwh", "count": 116, "path": "airflow_dags/resources/dwh/sqls/"},
+      {"domain": "finance", "count": 48, "path": "airflow_dags/resources/finance/sqls/"},
+      {"domain": "analytics", "count": 46, "path": "airflow_dags/resources/analytics/sqls/"},
+      {"domain": "bizops", "count": 26, "path": "airflow_dags/resources/bizops/sqls/"},
+      {"domain": "tests", "count": 24, "path": "airflow_dags/resources/tests/sqls/"},
+      {"domain": "risk", "count": 23, "path": "airflow_dags/resources/risk/sqls/"},
+      {"domain": "data_engg", "count": 10, "path": "airflow_dags/resources/data_engg/sqls/"},
+      {"domain": "ads_platform", "count": 9, "path": "airflow_dags/resources/ads_platform/sqls/"},
+      {"domain": "other", "count": 41, "path": "various"}
+    ],
+    "samples": [
+      {
+        "kind": "raw_sql",
+        "path": "airflow_dags/resources/growth/sqls/mo_leads_suppression_analytics/mo_leads_with_suppression.sql",
+        "creates_or_writes": ["{{ params.schema }}.MASTER_MECH_OUTREACH_LEADS", "{{ params.schema }}.MASTER_MECH_OUTREACH_LEADS_V2_SNAPSHOT"],
+        "reads_from": ["SFDC tables", "OUTREACH tables", "GROWTH internal tables"],
+        "citations": [{"file": "airflow_dags/resources/growth/sqls/mo_leads_suppression_analytics/mo_leads_with_suppression.sql", "lines": "1-5,261-265"}]
+      },
+      {
+        "kind": "raw_sql",
+        "path": "airflow_dags/resources/dwh/sqls/fact_booking_line_item.sql",
+        "creates_or_writes": ["dwh.fact_booking_line_item"],
+        "reads_from": ["staging_cdc_dwh.stg_fact_booking_line_item"],
+        "citations": [{"file": "airflow_dags/resources/dwh/sqls/fact_booking_line_item.sql", "lines": "1-37"}]
+      },
+      {
+        "kind": "raw_sql",
+        "path": "airflow_dags/resources/dwh/sqls/stg_spoke_billing_config.sql",
+        "creates_or_writes": ["staging_cdc_dwh.stg_spoke_billing_config", "dwh.spoke_billing_config"],
+        "reads_from": ["mongo_rippling.spoke_billing_config", "mongo_rippling.company"],
+        "citations": [{"file": "airflow_dags/resources/dwh/sqls/stg_spoke_billing_config.sql", "lines": "1-5,54-60"}]
+      },
+      {
+        "kind": "raw_sql",
+        "path": "airflow_dags/resources/growth/sqls/automated_intent_v2/insert_overwrite_leads_into_automated_intent_leads_table.sql",
+        "creates_or_writes": ["{{ params.schema }}.{{ params.table }}"],
+        "reads_from": ["population tables", "suppression tables"],
+        "citations": [{"file": "airflow_dags/resources/growth/sqls/automated_intent_v2/insert_overwrite_leads_into_automated_intent_leads_table.sql", "lines": "1"}]
+      }
+    ]
+  },
+  "conventions": {
+    "naming": {
+      "schemas": "Domain-based: DWH, STAGING_CDC_DWH, STAGING_DWH, GROWTH, SFDC, OUTREACH, RISK, ANALYTICS, MARKETING, CRUNCHBASE",
+      "tables": "Prefix-based: stg_* (staging), dim_* (dimension), fact_* (fact), rpt_* (report)",
+      "models": "N/A (no dbt models)",
+      "dags": "Pattern: {domain}_{entity}_{frequency} (e.g., dwh_dim_fact_booking_line_item, risk_fact_payroll)",
+      "citations": [
+        {"file": "airflow_dags/resources/dwh/sqls/stg_and_dim_account.sql", "lines": "1", "note": "stg_and_dim pattern"},
+        {"file": "airflow_dags/resources/dwh/sqls/fact_booking_line_item.sql", "lines": "1-7", "note": "fact_ prefix"},
+        {"file": "airflow_dags/dags/risk/risk_fact_payroll.py", "lines": "29", "note": "DAG naming pattern"}
+      ]
+    },
+    "grouping_rule_candidates": [
+      {
+        "rule": "Group by domain folder",
+        "why": "DAGs and resources are organized by business domain (growth, dwh, analytics, risk, etc.)",
+        "examples": ["airflow_dags/dags/growth/", "airflow_dags/resources/growth/"],
+        "citations": [{"file": "airflow_dags/dags/", "note": "26 domain folders"}]
+      },
+      {
+        "rule": "Group by table prefix (stg/dim/fact)",
+        "why": "SQL files follow dimensional modeling convention with staging -> dimension -> fact flow",
+        "examples": ["stg_fact_booking_line_item.sql -> fact_booking_line_item.sql"],
+        "citations": [{"file": "airflow_dags/resources/dwh/sqls/", "note": "116 SQL files with prefixes"}]
+      },
+      {
+        "rule": "Group by DAG tag",
+        "why": "DAGs are tagged with domain names for Airflow UI grouping",
+        "examples": ["tags=[\"dwh\"]", "tags=[\"growth\"]", "tags=[\"risk\"]"],
+        "citations": [{"file": "airflow_dags/dags/dwh/dwh_dim_fact_booking_line_item.py", "lines": "34"}]
+      },
+      {
+        "rule": "Group by Snowflake schema",
+        "why": "Tables are organized by schema matching business domains",
+        "examples": ["DWH.fact_*", "GROWTH.MASTER_*", "STAGING_CDC_DWH.stg_*"],
+        "citations": [{"file": "airflow_dags/resources/growth/scripts/common/constants.py", "lines": "138-157,811-818"}]
+      }
+    ],
+    "jinja_macros": [
+      {
+        "pattern": "{{ params.schema }}",
+        "impact": "Dynamic schema selection - typically GROWTH in prod, configurable for dev",
+        "citations": [{"file": "airflow_dags/resources/growth/sqls/mo_leads_suppression_analytics/mo_leads_with_suppression.sql", "lines": "1,261"}]
+      },
+      {
+        "pattern": "{{ params.run_dt }}",
+        "impact": "Runtime timestamp injection for incremental loads",
+        "citations": [{"file": "airflow_dags/dags/growth/new_mech_outreach_leads_table_dag_with_suppression.py", "lines": "50-53"}]
+      },
+      {
+        "pattern": "{{ params.table }}",
+        "impact": "Dynamic table name - used in generic SQL templates",
+        "citations": [{"file": "airflow_dags/resources/growth/sqls/automated_intent_v2/insert_overwrite_leads_into_automated_intent_leads_table.sql", "lines": "1"}]
+      },
+      {
+        "pattern": "DagUtils.is_prod_env()",
+        "impact": "Environment branching - schedules only active in production",
+        "citations": [{"file": "airflow_dags/dags/dwh/dwh_dim_fact_booking_line_item.py", "lines": "33"}]
+      }
+    ],
+    "directory_structure": [
+      {
+        "pattern": "airflow_dags/dags/{domain}/*.py",
+        "meaning": "DAG definitions organized by business domain",
+        "citations": [{"file": "README.md", "lines": "23-41"}]
+      },
+      {
+        "pattern": "airflow_dags/resources/{domain}/sqls/*.sql",
+        "meaning": "SQL files for each domain, loaded via DagUtils.get_sql_query_from_path()",
+        "citations": [{"file": "README.md", "lines": "83"}]
+      },
+      {
+        "pattern": "airflow_dags/resources/{domain}/configs/*.yml",
+        "meaning": "YAML DAG configurations for DAG generator",
+        "citations": [{"file": "README.md", "lines": "47-68"}]
+      },
+      {
+        "pattern": "airflow_dags/resources/{domain}/scripts/*.py",
+        "meaning": "Python utilities and task implementations",
+        "citations": [{"file": "README.md", "lines": "155-159"}]
+      },
+      {
+        "pattern": "airflow_dags/resources/{domain}/defaults.yml",
+        "meaning": "Default DAG arguments for domain",
+        "citations": [{"file": "airflow_dags/resources/dwh/defaults.yml", "lines": "1-16"}]
+      }
+    ]
+  },
+  "flow_candidates": [
+    {
+      "flow_name": "Mechanized Outreach (MO)",
+      "anchor_nodes": [
+        "GROWTH.MASTER_MECH_OUTREACH_LEADS",
+        "GROWTH.MECHANIZED_OUTREACH_POPULATION",
+        "GROWTH.MECHANIZED_OUTREACH_POPULATION_V2_SNAPSHOT"
+      ],
+      "why": "Core growth pipeline for automated lead outreach. Large SQL files with suppression logic, connected to Salesforce and Outreach integrations.",
+      "related_dags": [
+        "new_mech_outreach_leads_table_dag_with_suppression",
+        "mo_domain_ingestion",
+        "mo_g2_load_data",
+        "mo_gartner_load_data"
+      ],
+      "citations": [
+        {"file": "airflow_dags/resources/growth/sqls/mo_leads_suppression_analytics/mo_leads_with_suppression.sql", "lines": "1-5,261-265"},
+        {"file": "airflow_dags/resources/growth/sqls/mo_leads_suppression_analytics/MO_SUPPRESSION_RULES_DOCUMENTATION.md", "lines": "1-50"}
+      ]
+    },
+    {
+      "flow_name": "Automated Intent",
+      "anchor_nodes": [
+        "GROWTH.AUTOMATED_INTENT_LEADS",
+        "GROWTH.AUTOMATED_INTENT_POPULATION"
+      ],
+      "why": "Intent-based lead qualification pipeline. Processes leads from G2, Gartner, and other intent sources.",
+      "related_dags": [
+        "batch_map_automated_intent_leads_to_sequences",
+        "batch_sync_automated_intent_audience_config",
+        "update_automated_intent_unprocessed_limbo_leads"
+      ],
+      "citations": [
+        {"file": "airflow_dags/resources/growth/sqls/automated_intent_v2/insert_overwrite_leads_into_automated_intent_leads_table.sql", "lines": "1"},
+        {"file": "airflow_dags/resources/growth/sqls/automated_intent_v2/AUTOMATED_INTENT_SUPPRESSION_RULES_DOCUMENTATION.md", "lines": "1-100"}
+      ]
+    },
+    {
+      "flow_name": "DWH Booking Line Item",
+      "anchor_nodes": [
+        "dwh.fact_booking_line_item",
+        "dwh.dim_booking_line_item",
+        "staging_cdc_dwh.stg_fact_booking_line_item"
+      ],
+      "why": "Core financial data pipeline. Multiple dimension tables feed into the fact table.",
+      "related_dags": [
+        "dwh_dim_fact_booking_line_item",
+        "dwh_bookings"
+      ],
+      "citations": [
+        {"file": "airflow_dags/dags/dwh/dwh_dim_fact_booking_line_item.py", "lines": "1-149"},
+        {"file": "airflow_dags/resources/dwh/configs/dwh_dim_fact_booking_line_item.yml", "lines": "1-60"}
+      ]
+    },
+    {
+      "flow_name": "Lead Search & Enrichment",
+      "anchor_nodes": [
+        "GROWTH.LSW_LEADS",
+        "GROWTH.LEAD_SEARCH_INPUT",
+        "GROWTH.AMPLEMARKET_LEAD_SEARCH_OUTPUT"
+      ],
+      "why": "Multi-vendor lead enrichment pipeline. Integrates ZoomInfo, Apollo, Adapt, and other data vendors.",
+      "related_dags": [
+        "lead_search_scheduling_dag",
+        "lead_enrichment_scheduling_dag",
+        "lead_search_transformations"
+      ],
+      "citations": [
+        {"file": "airflow_dags/resources/growth/sqls/lead_search/", "note": "10 SQL files"},
+        {"file": "airflow_dags/resources/growth/sqls/lead_enrichment/", "note": "12 SQL files"}
+      ]
+    },
+    {
+      "flow_name": "Cross-sell Email Audiences",
+      "anchor_nodes": [
+        "GROWTH.PREFILTERED_XSELL_EMAIL",
+        "GROWTH.MASTER_XSELL_BATCH_EMAIL_COHORT"
+      ],
+      "why": "Large collection of audience-building SQLs for email campaigns. 219 SQL files for different campaign types.",
+      "related_dags": [
+        "batch_refresh_audience_population",
+        "invoke_custom_audience_builder"
+      ],
+      "citations": [
+        {"file": "airflow_dags/resources/growth/sqls/xsell/", "note": "219 SQL files"},
+        {"file": "airflow_dags/resources/growth/scripts/common/constants.py", "lines": "894-896"}
+      ]
+    },
+    {
+      "flow_name": "Risk Data Models",
+      "anchor_nodes": [
+        "RISK.dim_ach",
+        "RISK.dim_wire",
+        "RISK.fact_ledger_entry",
+        "RISK.fact_payroll_run"
+      ],
+      "why": "Financial risk monitoring pipeline with high-frequency updates (*/20 minutes for some).",
+      "related_dags": [
+        "risk_fact_ledger_entry",
+        "risk_dim_ach_hourly",
+        "risk_dim_wire",
+        "risk_populate_ip_data_models"
+      ],
+      "citations": [
+        {"file": "airflow_dags/dags/risk/", "note": "19 DAG files"},
+        {"file": "airflow_dags/resources/risk/sqls/", "note": "23 SQL files"}
+      ]
+    }
+  ],
+  "known_ambiguities": [
+    {
+      "issue": "Dynamic table names via Jinja params",
+      "where": "Most growth SQLs use {{ params.schema }}.{{ params.table }} patterns",
+      "recommended_next_step": "Parse DAG Python files to extract actual param values passed to SnowflakeOperator",
+      "citations": [
+        {"file": "airflow_dags/resources/growth/sqls/automated_intent_v2/insert_overwrite_leads_into_automated_intent_leads_table.sql", "lines": "1"},
+        {"file": "airflow_dags/dags/growth/new_mech_outreach_leads_table_dag_with_suppression.py", "lines": "50-67"}
+      ]
+    },
+    {
+      "issue": "No compiled lineage graph",
+      "where": "Repository-wide",
+      "recommended_next_step": "Parse SQL files with sqlglot or similar to extract FROM/JOIN/INSERT targets",
+      "citations": [
+        {"file": "README.md", "lines": "1-2", "note": "Transitioning to dbt which would provide manifest.json"}
+      ]
+    },
+    {
+      "issue": "Auto-generated DAGs mixed with manual DAGs",
+      "where": "Some DAGs have @generated by airflow_dag_generator comment",
+      "recommended_next_step": "Grep for '@generated' to identify which DAGs are from YAML configs vs manual",
+      "citations": [
+        {"file": "airflow_dags/dags/dwh/dwh_dim_fact_booking_line_item.py", "lines": "1-2"}
+      ]
+    },
+    {
+      "issue": "Environment-specific scheduling",
+      "where": "All DAGs use DagUtils.is_prod_env() ternary for schedule_interval",
+      "recommended_next_step": "Assume prod schedules when building lineage; dev always has schedule=None",
+      "citations": [
+        {"file": "airflow_dags/dags/dwh/dwh_dim_fact_booking_line_item.py", "lines": "33"}
+      ]
+    },
+    {
+      "issue": "External data sources not fully enumerated",
+      "where": "Salesforce, Outreach, ZoomInfo, Apollo, Crunchbase, and other external APIs",
+      "recommended_next_step": "Parse constants.py and connection IDs to enumerate all external integrations",
+      "citations": [
+        {"file": "airflow_dags/resources/growth/scripts/common/constants.py", "lines": "421-453,519-565"}
+      ]
+    }
+  ],
+  "metadata": {
+    "generated_at": "2026-01-06T00:00:00Z",
+    "generator": "repo_cartographer",
+    "version": "1.0.0"
+  }
+}
+

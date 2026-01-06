@@ -1,0 +1,427 @@
+{
+  "repo": {
+    "name": "growth-engg",
+    "root": "/Users/will/Documents/GitHub/growth-engg",
+    "primary_languages": ["python", "sql", "typescript"],
+    "key_dirs": [
+      "growth_dagster/src/growth_pipelines/",
+      "growth_dagster/src/growth_databricks/",
+      "src/growth_main/apps/",
+      "src/growth_jobs/jobs/",
+      "frontend-apps/"
+    ],
+    "citations": [
+      {"file": "CLAUDE.md", "lines": "1-155", "note": "Development commands and architecture overview"},
+      {"file": "service_catalog.yaml", "lines": "1-6", "note": "Service metadata"}
+    ]
+  },
+  "dbt": {
+    "present": false,
+    "project_files": {
+      "dbt_project_yml": null,
+      "packages_yml": null,
+      "profiles_hint": null,
+      "citations": []
+    },
+    "models_dirs": [],
+    "macros_dirs": [],
+    "sources": [],
+    "models": [],
+    "manifest": {
+      "present": false,
+      "path": null,
+      "how_to_generate": "N/A - This repo uses Databricks DLT instead of dbt",
+      "citations": []
+    }
+  },
+  "orchestration": {
+    "airflow": {
+      "present": false,
+      "dags": [],
+      "citations": []
+    },
+    "dagster": {
+      "present": true,
+      "entry_point": {
+        "file": "growth_dagster/src/growth_pipelines/definitions.py",
+        "pattern": "load_from_defs_folder",
+        "citations": [
+          {"file": "growth_dagster/src/growth_pipelines/definitions.py", "lines": "1-11"}
+        ]
+      },
+      "config_files": [
+        {
+          "file": "growth_dagster/dagster.yaml",
+          "purpose": "Concurrency and run limits",
+          "citations": [{"file": "growth_dagster/dagster.yaml", "lines": "1-8"}]
+        },
+        {
+          "file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml",
+          "purpose": "Job and schedule definitions with Jinja templates",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "1-105"}]
+        }
+      ],
+      "assets": [
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_zoominfo_company_data_dlt",
+          "group": "vendor_companies_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "57-64"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_demandbase_companies_dlt",
+          "group": "vendor_companies_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "73-80"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_cognism_companies_dlt",
+          "group": "vendor_companies_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "81-88"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_clearbit_reveal_companies_dlt",
+          "group": "vendor_companies_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "89-96"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_g2_companies_dlt",
+          "group": "vendor_companies_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "97-104"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_gartner_intent_companies_dlt",
+          "group": "vendor_companies_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "113-120"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_crunchbase_companies_dlt",
+          "group": "vendor_companies_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "177-185"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_crunchbase_funding_rounds_dlt",
+          "group": "vendor_companies_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "deps": ["{{ dagster_safe_bundle_prefix }}_crunchbase_companies_dlt"],
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "186-198"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_zoominfo_leads_data_dlt",
+          "group": "vendor_leads_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_leads_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_leads_s3_dataloader_pipeline/defs.yaml", "lines": "57-65"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_apollo_leads_data_dlt",
+          "group": "vendor_leads_s3_dataloader_dlt_pipeline",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_leads_s3_dataloader_pipeline/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_leads_s3_dataloader_pipeline/defs.yaml", "lines": "67-76"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_timeline_summarization",
+          "group": "timeline_summarization",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/dlt_timeline_summarization/defs.yaml",
+          "compute_kind": "databricks-dlt",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_timeline_summarization/defs.yaml", "lines": "1-60"}]
+        },
+        {
+          "asset_key": "{{ dagster_safe_bundle_prefix }}_context_store_gtm_outbound_template_sync",
+          "group": "context_store",
+          "path": "growth_dagster/src/growth_pipelines/defs/growth/context_store_gtm_outbound_template_sync/defs.yaml",
+          "compute_kind": "growth_service_job",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/context_store_gtm_outbound_template_sync/defs.yaml", "lines": "1-21"}]
+        }
+      ],
+      "jobs": [
+        {
+          "job_id": "{{ dagster_safe_bundle_prefix }}_daily_job",
+          "schedule_cron": "0 8 * * *",
+          "timezone": "America/Los_Angeles",
+          "assets": ["{{ dagster_safe_bundle_prefix }}_api_events_ingestion", "{{ dagster_safe_bundle_prefix }}_test_py"],
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "7-17"}]
+        },
+        {
+          "job_id": "{{ dagster_safe_bundle_prefix }}_vendor_companies_s3_to_iceberg_job",
+          "schedule_cron": "*/30 * * * *",
+          "timezone": "America/Los_Angeles",
+          "asset_groups": ["{{ dagster_safe_bundle_prefix }}_vendor_companies_s3_dataloader_dlt_pipeline"],
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "18-27"}]
+        },
+        {
+          "job_id": "{{ dagster_safe_bundle_prefix }}_vendor_leads_s3_to_iceberg_job",
+          "schedule_cron": "*/30 * * * *",
+          "timezone": "America/Los_Angeles",
+          "asset_groups": ["{{ dagster_safe_bundle_prefix }}_vendor_leads_s3_dataloader_dlt_pipeline"],
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "29-37"}]
+        },
+        {
+          "job_id": "{{ dagster_safe_bundle_prefix }}_timeline_dlt_job",
+          "schedule_cron": "disabled",
+          "asset_groups": ["{{ dagster_safe_bundle_prefix }}_timeline_summarization"],
+          "tags": {"no_concurrency": "timeline_dlt"},
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "58-70"}]
+        },
+        {
+          "job_id": "{{ dagster_safe_bundle_prefix }}_context_store_jobs",
+          "schedule_cron": "0 */6 * * *",
+          "timezone": "America/Los_Angeles",
+          "assets": ["{{ dagster_safe_bundle_prefix }}_context_store_gtm_outbound_template_sync"],
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "72-80"}]
+        }
+      ],
+      "components": [
+        {
+          "name": "DatabricksJob",
+          "path": "growth_dagster/src/growth_pipelines/components/databricks_component.py",
+          "purpose": "Submit Spark Python or Notebook tasks to Databricks",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/components/databricks_component.py", "lines": "75-263"}]
+        },
+        {
+          "name": "DatabricksDLTPipeline",
+          "path": "growth_dagster/src/growth_pipelines/components/databricks_component.py",
+          "purpose": "Manage Databricks DLT pipelines with file upload and monitoring",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/components/databricks_component.py", "lines": "524-1233"}]
+        },
+        {
+          "name": "GrowthServiceJob",
+          "path": "growth_dagster/src/growth_pipelines/components/growth_service_job_component.py",
+          "purpose": "Trigger and monitor Growth Service API jobs",
+          "citations": [{"file": "growth_dagster/src/growth_pipelines/components/growth_service_job_component.py", "lines": "79-315"}]
+        }
+      ],
+      "template_variables": {
+        "file": "growth_dagster/src/growth_pipelines/defs/template_vars.py",
+        "key_vars": [
+          {"name": "dagster_safe_bundle_prefix", "values": ["growth_dev", "growth_staging", "growth_prod"], "lines": "120-135"},
+          {"name": "environment", "values": ["development", "staging", "production"], "lines": "146-149"},
+          {"name": "catalog_name", "values": ["dev_growth_catalog", "stage_growth_catalog", "prod_growth_catalog"], "lines": "200-210"},
+          {"name": "catalog_iceberg_bucket", "description": "S3 bucket for Iceberg tables", "lines": "213-221"},
+          {"name": "shared_workspace", "values": ["dev", "staging", "prod"], "lines": "241-250"}
+        ],
+        "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/template_vars.py", "lines": "1-414"}]
+      },
+      "citations": [
+        {"file": "growth_dagster/README.md", "lines": "1-46", "note": "Dagster quick start and development guide"}
+      ]
+    }
+  },
+  "sql_assets": [
+    {
+      "kind": "dlt_streaming_table",
+      "path": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/companies/crunchbase/bronze__crunchbase_companies.sql",
+      "creates_or_writes": ["bronze.crunchbase_companies"],
+      "reads_from": ["prod_fivetran_mdls_catalog.crunchbase.organisation", "prod_fivetran_mdls_catalog.crunchbase.organisation_identifier"],
+      "citations": [{"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/companies/crunchbase/bronze__crunchbase_companies.sql", "lines": "1-24"}]
+    },
+    {
+      "kind": "dlt_streaming_table",
+      "path": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/funding_rounds/crunchbase/bronze__crunchbase_funding_investors.sql",
+      "creates_or_writes": ["bronze.crunchbase_funding_investors"],
+      "reads_from": ["prod_fivetran_mdls_catalog.crunchbase.*"],
+      "citations": [{"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/funding_rounds/crunchbase/bronze__crunchbase_funding_investors.sql", "lines": "1-50"}]
+    },
+    {
+      "kind": "dlt_streaming_table",
+      "path": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/funding_rounds/crunchbase/gold__crunchbase_funding_rounds.sql",
+      "creates_or_writes": ["gold.crunchbase_funding_rounds"],
+      "reads_from": ["silver.crunchbase_funding_*"],
+      "citations": [{"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/funding_rounds/crunchbase/gold__crunchbase_funding_rounds.sql", "lines": "1-50"}]
+    },
+    {
+      "kind": "dlt_streaming_table",
+      "path": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/leads/apollo/gold__apollo_leads_data.sql",
+      "creates_or_writes": ["gold.apollo_leads_data"],
+      "reads_from": ["silver.apollo_lead_*"],
+      "citations": [{"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/leads/apollo/gold__apollo_leads_data.sql", "lines": "1-50"}]
+    }
+  ],
+  "conventions": {
+    "naming": {
+      "schemas": "bronze | staging | silver | gold (Medallion architecture)",
+      "tables": "{schema}.{vendor}_{entity} (e.g., silver.zoominfo_company_cube)",
+      "models": "N/A (uses DLT Python/SQL instead of dbt models)",
+      "assets": "{{ dagster_safe_bundle_prefix }}_{vendor}_{entity}_dlt",
+      "citations": [
+        {"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/utilities/dlt_table_builder.py", "lines": "154-188", "note": "DLTTableConfig schema configuration"},
+        {"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "57-64", "note": "Asset naming example"}
+      ]
+    },
+    "grouping_rule_candidates": [
+      {
+        "rule": "group_by_vendor",
+        "why": "Assets are organized by data vendor (zoominfo, apollo, cognism, demandbase, etc.)",
+        "examples": ["zoominfo_company_data_dlt", "apollo_leads_data_dlt", "cognism_companies_dlt"],
+        "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "54-198"}]
+      },
+      {
+        "rule": "group_by_entity_type",
+        "why": "Assets are categorized by entity type (companies, leads, jobs, funding_rounds)",
+        "examples": ["vendor_companies_s3_dataloader_dlt_pipeline", "vendor_leads_s3_dataloader_dlt_pipeline"],
+        "citations": [{"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/", "note": "Directory structure"}]
+      },
+      {
+        "rule": "group_by_medallion_layer",
+        "why": "Data flows through bronze → staging → silver → gold layers",
+        "examples": ["bronze.zoominfo_company_cube", "staging.zoominfo_company_cube", "silver.zoominfo_company_cube"],
+        "citations": [{"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/utilities/dlt_table_builder.py", "lines": "176-180"}]
+      },
+      {
+        "rule": "group_by_domain",
+        "why": "High-level domains like timeline_summarization, context_store, vendor_data",
+        "examples": ["timeline_summarization", "context_store_gtm_outbound_template_sync"],
+        "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/growth/", "note": "Directory structure"}]
+      }
+    ],
+    "jinja_macros": [
+      {
+        "pattern": "{{ dagster_safe_bundle_prefix }}",
+        "impact": "Resolves to growth_dev | growth_staging | growth_prod based on DAGSTER_INSTANCE env var",
+        "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/template_vars.py", "lines": "28-41, 120-135"}]
+      },
+      {
+        "pattern": "{{ catalog_name }}",
+        "impact": "Resolves to dev_growth_catalog | stage_growth_catalog | prod_growth_catalog",
+        "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/template_vars.py", "lines": "200-210"}]
+      },
+      {
+        "pattern": "{{ environment }}",
+        "impact": "Resolves to development | staging | production",
+        "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/template_vars.py", "lines": "146-149"}]
+      },
+      {
+        "pattern": "{{ shared_workspace }}",
+        "impact": "Resolves to dev | staging | prod for Databricks workspace paths",
+        "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/template_vars.py", "lines": "241-250"}]
+      }
+    ],
+    "directory_structure": [
+      {
+        "pattern": "growth_dagster/src/growth_pipelines/defs/growth/{domain}/defs.yaml",
+        "meaning": "Each subdirectory defines a Dagster asset group via YAML component definition",
+        "citations": [{"file": "growth_dagster/src/growth_pipelines/definitions.py", "lines": "6-10"}]
+      },
+      {
+        "pattern": "growth_dagster/src/growth_databricks/{domain}/transformations/{entity_type}/{vendor}/",
+        "meaning": "DLT transformation scripts organized by domain, entity type, and vendor",
+        "citations": [{"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/", "note": "Directory listing"}]
+      },
+      {
+        "pattern": "src/growth_main/apps/{service_name}/",
+        "meaning": "FastAPI application modules with API routes, services, and models",
+        "citations": [{"file": "CLAUDE.md", "lines": "90-100"}]
+      }
+    ],
+    "citations": []
+  },
+  "flow_candidates": [
+    {
+      "flow_name": "Vendor Company Data Ingestion",
+      "anchor_nodes": [
+        "bronze.{vendor}_companies",
+        "staging.{vendor}_companies", 
+        "silver.{vendor}_companies"
+      ],
+      "why": "Primary data ingestion flow for company data from third-party vendors (Zoominfo, Apollo, Cognism, Demandbase, etc.) via S3 → Iceberg",
+      "sources": ["S3 vendor buckets", "Fivetran (Crunchbase, Pitchbook)"],
+      "schedule": "Every 30 minutes",
+      "citations": [
+        {"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_companies_s3_dataloader_pipeline/defs.yaml", "lines": "1-198"},
+        {"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "18-27"}
+      ]
+    },
+    {
+      "flow_name": "Vendor Lead Data Ingestion",
+      "anchor_nodes": [
+        "bronze.{vendor}_lead_*",
+        "silver.{vendor}_lead_*",
+        "gold.apollo_leads_data"
+      ],
+      "why": "Lead enrichment and contact data ingestion from vendors (Zoominfo, Apollo, Cognism, Clearbit, Lusha, Kaspr)",
+      "sources": ["S3 vendor buckets", "Fivetran (Pitchbook)"],
+      "schedule": "Every 30 minutes",
+      "citations": [
+        {"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_vendor_leads_s3_dataloader_pipeline/defs.yaml", "lines": "1-122"},
+        {"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "29-37"}
+      ]
+    },
+    {
+      "flow_name": "Timeline Summarization (AI-Enriched)",
+      "anchor_nodes": [
+        "silver.email_thread_summaries",
+        "silver.timeline_gong_calls",
+        "silver.timeline_closed_lost_opportunities",
+        "gold.interaction_timeline_event",
+        "gold.unified_interaction_timeline"
+      ],
+      "why": "LLM-powered summarization of sales account interactions combining emails, Gong calls, and closed-lost opportunities into unified timeline with follow-up recommendations",
+      "sources": ["Snowflake DWH (SFDC leads, contacts, tasks)", "silver tables from other DLT pipelines"],
+      "schedule": "Manual trigger (disabled cron)",
+      "ai_model": "databricks-meta-llama-3-3-70b-instruct",
+      "citations": [
+        {"file": "growth_dagster/src/growth_databricks/timeline_summarization/transformations/unified_interaction_timeline.py", "lines": "1-50, 514-622"},
+        {"file": "growth_dagster/src/growth_pipelines/defs/growth/dlt_timeline_summarization/defs.yaml", "lines": "1-60"},
+        {"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "58-70"}
+      ]
+    },
+    {
+      "flow_name": "Context Store Sync",
+      "anchor_nodes": ["context_store_gtm_outbound_template_sync"],
+      "why": "Periodic sync of GTM outbound email templates from SQL to application context store",
+      "sources": ["Growth Service API"],
+      "schedule": "Every 6 hours",
+      "citations": [
+        {"file": "growth_dagster/src/growth_pipelines/defs/growth/context_store_gtm_outbound_template_sync/defs.yaml", "lines": "1-21"},
+        {"file": "growth_dagster/src/growth_pipelines/defs/jobs.yaml", "lines": "72-80"}
+      ]
+    }
+  ],
+  "known_ambiguities": [
+    {
+      "issue": "Dynamic asset names via Jinja templates",
+      "where": "All defs.yaml files use {{ dagster_safe_bundle_prefix }} which resolves at runtime",
+      "recommended_next_step": "Resolve template by checking DAGSTER_INSTANCE env var: 'production' → growth_prod, 'staging' → growth_staging, else → growth_dev",
+      "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/template_vars.py", "lines": "28-41"}]
+    },
+    {
+      "issue": "Environment-specific catalog names",
+      "where": "Catalog names vary per environment (dev_growth_catalog, stage_growth_catalog, prod_growth_catalog)",
+      "recommended_next_step": "For lineage, normalize catalog references or parameterize by environment",
+      "citations": [{"file": "growth_dagster/src/growth_pipelines/defs/template_vars.py", "lines": "200-210"}]
+    },
+    {
+      "issue": "Fivetran source table references use prod catalog names",
+      "where": "SQL files reference 'prod_fivetran_mdls_catalog' directly, which may not exist in dev/staging",
+      "recommended_next_step": "Check if cross-catalog access is configured or if dev/staging have equivalent catalogs",
+      "citations": [{"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/transformations/companies/crunchbase/bronze__crunchbase_companies.sql", "lines": "21-22"}]
+    },
+    {
+      "issue": "DLT table builder creates tables dynamically via Python",
+      "where": "Most bronze/staging/silver tables are created via DLTTableBuilder class, not static SQL",
+      "recommended_next_step": "Parse DLTTableConfig instances in Python files to extract table schemas and dependencies",
+      "citations": [{"file": "growth_dagster/src/growth_databricks/vendor_s3_dataloader_dlt_pipeline/utilities/dlt_table_builder.py", "lines": "154-188, 234-247"}]
+    },
+    {
+      "issue": "Timeline summarization reads from Snowflake via Unity Catalog",
+      "where": "unified_interaction_timeline.py references snowflake_us1_prod_rippling_dwh_marketing tables",
+      "recommended_next_step": "Map Unity Catalog external connections to understand cross-platform lineage",
+      "citations": [{"file": "growth_dagster/src/growth_databricks/timeline_summarization/transformations/unified_interaction_timeline.py", "lines": "436-459"}]
+    }
+  ]
+}
+

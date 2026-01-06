@@ -26,10 +26,10 @@ export async function enrichWithSnowflakeMetadata(
   // Get config from environment
   const config: SnowflakeConfig = {
     account: process.env.SNOWFLAKE_ACCOUNT || "",
-    username: process.env.SNOWFLAKE_USER || "",
-    authenticator: (process.env.SNOWFLAKE_AUTHENTICATOR as SnowflakeConfig["authenticator"]) || "externalbrowser",
+    username: process.env.RIPPLING_ACCOUNT_EMAIL || "",
+    authenticator: (process.env.GROWTH_SNOWFLAKE_AUTHENTICATOR as SnowflakeConfig["authenticator"]) || "externalbrowser",
     warehouse: process.env.SNOWFLAKE_WAREHOUSE || "",
-    database: process.env.SNOWFLAKE_DATABASE || "prod_rippling_dwh",
+    database: process.env.SNOWFLAKE_DATABASE || "PROD_RIPPLING_DWH",
     role: process.env.SNOWFLAKE_ROLE,
   };
 
@@ -144,10 +144,10 @@ export async function resolveFqnConflicts(
 
   const config: SnowflakeConfig = {
     account: process.env.SNOWFLAKE_ACCOUNT || "",
-    username: process.env.SNOWFLAKE_USER || "",
-    authenticator: (process.env.SNOWFLAKE_AUTHENTICATOR as SnowflakeConfig["authenticator"]) || "externalbrowser",
+    username: process.env.RIPPLING_ACCOUNT_EMAIL || "",
+    authenticator: (process.env.GROWTH_SNOWFLAKE_AUTHENTICATOR as SnowflakeConfig["authenticator"]) || "externalbrowser",
     warehouse: process.env.SNOWFLAKE_WAREHOUSE || "",
-    database: process.env.SNOWFLAKE_DATABASE || "prod_rippling_dwh",
+    database: process.env.SNOWFLAKE_DATABASE || "PROD_RIPPLING_DWH",
   };
 
   if (!config.account || !config.username) {

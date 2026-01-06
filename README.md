@@ -83,6 +83,14 @@ Once indexing completes, click "Open Graph Explorer" to:
 - Search for specific tables
 - Click nodes to see details in the side panel
 
+### 7. Reset (Start Fresh)
+
+To clear all indexed data and start from scratch:
+- Click the **Reset** button on the home page (after indexing) or in the explorer header
+- Confirm the action in the dialog
+- All nodes, edges, flows, groups, and AI explanations will be deleted
+- You can then re-analyze your pipeline with fresh data
+
 ## Architecture
 
 ```
@@ -96,7 +104,8 @@ app/
 │   ├── search/           # Full-text search
 │   ├── node/             # Node details
 │   ├── explain/          # AI explanations
-│   └── column-lineage/   # Column-level lineage
+│   ├── column-lineage/   # Column-level lineage
+│   └── reset/            # Clear all data
 
 components/
 ├── GraphExplorer.tsx     # Cytoscape.js wrapper

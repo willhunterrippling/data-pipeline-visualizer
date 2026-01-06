@@ -26,6 +26,8 @@ export default function Home() {
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [graphStats, setGraphStats] = useState<GraphStats | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
 
   const pollStatus = useCallback(async (id: string) => {
     try {
@@ -76,6 +78,26 @@ export default function Home() {
   const currentStageIndex = jobStatus?.stage
     ? INDEXING_STAGES.findIndex((s) => s.id === jobStatus.stage)
     : -1;
+
+  async function handleReset() {
+    setIsResetting(true);
+    try {
+      const res = await fetch("/api/reset", { method: "POST" });
+      if (res.ok) {
+        // Clear all state to return to initial view
+        setJobId(null);
+        setJobStatus(null);
+        setGraphStats(null);
+        setShowResetConfirm(false);
+      } else {
+        console.error("Failed to reset database");
+      }
+    } catch (error) {
+      console.error("Failed to reset:", error);
+    } finally {
+      setIsResetting(false);
+    }
+  }
 
   return (
     <main className="min-h-screen bg-[#0a0a0f] text-white">
@@ -303,10 +325,51 @@ export default function Home() {
               >
                 Re-index
               </button>
+              <button
+                onClick={() => setShowResetConfirm(true)}
+                className="px-8 py-4 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors font-semibold border border-red-500/30"
+              >
+                Reset
+              </button>
             </div>
           </div>
         )}
       </div>
+
+      {/* Reset Confirmation Modal */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#1a1a24] rounded-xl border border-white/10 p-6 max-w-md w-full mx-4 shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
+                <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-semibold">Reset All Data?</h3>
+            </div>
+            <p className="text-white/60 mb-6">
+              This will permanently delete all indexed data, including nodes, edges, flows, groups, and explanations. You will need to re-analyze your pipeline from scratch.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors font-medium"
+                disabled={isResetting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleReset}
+                disabled={isResetting}
+                className="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-400 text-white transition-colors font-medium disabled:opacity-50"
+              >
+                {isResetting ? "Resetting..." : "Reset All Data"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

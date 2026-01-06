@@ -360,6 +360,7 @@ export function clearAllData() {
     DELETE FROM groups;
     DELETE FROM edges;
     DELETE FROM nodes;
+    DELETE FROM jobs;
   `);
 }
 

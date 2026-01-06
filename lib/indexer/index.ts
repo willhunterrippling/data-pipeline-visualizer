@@ -600,6 +600,74 @@ function proposeFlows(
     });
   }
 
+  // Automated Intent flow
+  const aiAnchor = nodes.find(
+    (n) =>
+      n.name === "AUTOMATED_INTENT_LEADS" ||
+      n.name === "AUTOMATED_INTENT_POPULATION" ||
+      n.name.toLowerCase().includes("automated_intent")
+  );
+  if (aiAnchor) {
+    const members = new Set([aiAnchor.id]);
+    const upstream = getUpstream(aiAnchor.id, 5);
+    upstream.forEach((id) => members.add(id));
+
+    flows.push({
+      id: uuid(),
+      name: "Automated Intent",
+      description: "Intent-based lead qualification pipeline processing leads from G2, Gartner, and other intent sources",
+      anchorNodes: [aiAnchor.id],
+      memberNodes: [...members],
+      userDefined: false,
+      inferenceReason: "Detected AUTOMATED_INTENT tables as anchor for intent-based lead qualification",
+    });
+  }
+
+  // Job Change flow
+  const jobChangeAnchor = nodes.find(
+    (n) =>
+      n.name.toLowerCase().includes("mart_growth__job_change") ||
+      n.name === "JOB_CHANGE_CLAY_RESULTS_RAW_OUTPUT" ||
+      n.name.toLowerCase().includes("job_change")
+  );
+  if (jobChangeAnchor) {
+    const members = new Set([jobChangeAnchor.id]);
+    const upstream = getUpstream(jobChangeAnchor.id, 5);
+    upstream.forEach((id) => members.add(id));
+
+    flows.push({
+      id: uuid(),
+      name: "Job Change",
+      description: "Employment change signals from Clay integration for prospecting triggers",
+      anchorNodes: [jobChangeAnchor.id],
+      memberNodes: [...members],
+      userDefined: false,
+      inferenceReason: "Detected job change tables as anchor for employment change signal processing",
+    });
+  }
+
+  // Direct Mail flow
+  const directMailAnchor = nodes.find(
+    (n) =>
+      n.name === "mart_growth__direct_mail_lead_enrichment" ||
+      n.name.toLowerCase().includes("direct_mail")
+  );
+  if (directMailAnchor) {
+    const members = new Set([directMailAnchor.id]);
+    const upstream = getUpstream(directMailAnchor.id, 5);
+    upstream.forEach((id) => members.add(id));
+
+    flows.push({
+      id: uuid(),
+      name: "Direct Mail",
+      description: "Physical mail campaign lead enrichment for Lahlouh integration",
+      anchorNodes: [directMailAnchor.id],
+      memberNodes: [...members],
+      userDefined: false,
+      inferenceReason: "Detected direct mail lead enrichment table as anchor for physical mail campaigns",
+    });
+  }
+
   return flows;
 }
 

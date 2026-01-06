@@ -52,6 +52,18 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  
+  // Keep refs for stable access in event handlers (avoid stale closures)
+  const nodesRef = useRef(nodes);
+  const onNodeSelectRef = useRef(onNodeSelect);
+  const onNodeDoubleClickRef = useRef(onNodeDoubleClick);
+  
+  // Update refs when props change
+  useEffect(() => {
+    nodesRef.current = nodes;
+    onNodeSelectRef.current = onNodeSelect;
+    onNodeDoubleClickRef.current = onNodeDoubleClick;
+  }, [nodes, onNodeSelect, onNodeDoubleClick]);
 
   // Expose methods to parent
   useImperativeHandle(ref, () => ({
@@ -351,11 +363,12 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
     `;
     containerRef.current?.appendChild(tooltip);
 
-    // Event handlers
+    // Event handlers - use refs to avoid stale closures
     cy.on("tap", "node:not(.group-node)", (evt) => {
       const node = evt.target as NodeSingular;
-      const nodeData = nodes.find((n) => n.id === node.id());
-      onNodeSelect?.(nodeData || null);
+      const currentNodes = nodesRef.current;
+      const nodeData = currentNodes.find((n) => n.id === node.id());
+      onNodeSelectRef.current?.(nodeData || null);
 
       // Highlight neighborhood
       cy.elements().removeClass("highlighted dimmed");
@@ -381,15 +394,16 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
 
     cy.on("dbltap", "node:not(.group-node)", (evt) => {
       const node = evt.target as NodeSingular;
-      const nodeData = nodes.find((n) => n.id === node.id());
+      const currentNodes = nodesRef.current;
+      const nodeData = currentNodes.find((n) => n.id === node.id());
       if (nodeData) {
-        onNodeDoubleClick?.(nodeData);
+        onNodeDoubleClickRef.current?.(nodeData);
       }
     });
 
     cy.on("tap", (evt) => {
       if (evt.target === cy) {
-        onNodeSelect?.(null);
+        onNodeSelectRef.current?.(null);
         cy.elements().removeClass("highlighted dimmed");
       }
     });

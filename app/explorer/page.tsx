@@ -71,14 +71,23 @@ function ExplorerContent() {
     updateUrl(flowId, sidePanel?.node.id);
   }, [updateUrl, sidePanel]);
 
-  // Load graph data
+  // Track if initial load is complete to prevent re-fetching on URL changes
+  const hasLoadedRef = useRef(false);
+
+  // Load graph data - only once on mount, not on URL changes
   useEffect(() => {
+    // Skip if already loaded - URL changes shouldn't refetch data
+    if (hasLoadedRef.current) {
+      return;
+    }
+
     async function loadGraph() {
       try {
         const res = await fetch("/api/graph");
         if (!res.ok) throw new Error("Failed to load graph");
         
         const data = await res.json();
+        hasLoadedRef.current = true;
         setNodes(data.nodes);
         setEdges(data.edges);
         setGroups(data.groups);

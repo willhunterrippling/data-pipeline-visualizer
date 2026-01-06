@@ -3,6 +3,18 @@
 import { useState, useEffect, useCallback } from "react";
 import { INDEXING_STAGES } from "@/lib/types";
 
+interface ActivityLogEntry {
+  timestamp: string;
+  message: string;
+}
+
+interface UsageStats {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCalls: number;
+  estimatedCostUsd: number;
+}
+
 interface JobStatus {
   id: string;
   status: "pending" | "running" | "completed" | "failed";
@@ -12,6 +24,8 @@ interface JobStatus {
   overallProgress: number;
   message?: string;
   error?: string;
+  activityLog?: ActivityLogEntry[];
+  usageStats?: UsageStats | null;
 }
 
 interface GraphStats {
@@ -78,6 +92,19 @@ export default function Home() {
   const currentStageIndex = jobStatus?.stage
     ? INDEXING_STAGES.findIndex((s) => s.id === jobStatus.stage)
     : -1;
+
+  // Format relative time for activity log
+  function formatRelativeTime(timestamp: string): string {
+    const now = Date.now();
+    const then = new Date(timestamp).getTime();
+    const diffMs = now - then;
+    const diffSec = Math.floor(diffMs / 1000);
+    
+    if (diffSec < 5) return "now";
+    if (diffSec < 60) return `${diffSec}s ago`;
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+    return `${Math.floor(diffSec / 3600)}h ago`;
+  }
 
   async function handleReset() {
     setIsResetting(true);
@@ -273,6 +300,29 @@ export default function Home() {
                     );
                   })}
                 </div>
+
+                {/* Activity Log */}
+                {jobStatus.activityLog && jobStatus.activityLog.length > 0 && (
+                  <div className="mt-6 p-4 rounded-xl bg-[#12121a] border border-white/5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
+                      <span className="text-xs font-medium text-white/50 uppercase tracking-wide">Activity</span>
+                    </div>
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto font-mono text-xs">
+                      {jobStatus.activityLog.slice(-10).reverse().map((entry, i) => (
+                        <div
+                          key={`${entry.timestamp}-${i}`}
+                          className={`flex gap-3 ${i === 0 ? "text-white" : "text-white/50"}`}
+                        >
+                          <span className="text-white/30 w-14 flex-shrink-0 text-right">
+                            {formatRelativeTime(entry.timestamp)}
+                          </span>
+                          <span className="truncate">{entry.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -311,6 +361,37 @@ export default function Home() {
                 <div className="text-sm text-white/60 mt-1">Flows</div>
               </div>
             </div>
+
+            {/* AI Usage Cost Summary */}
+            {jobStatus.usageStats && jobStatus.usageStats.totalCalls > 0 && (
+              <div className="flex items-center justify-center gap-6 py-3 px-5 rounded-lg bg-white/5 border border-white/10 text-sm">
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-white/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                  <span className="text-white/50">AI Usage:</span>
+                </div>
+                <div className="flex items-center gap-4 text-white/70">
+                  <span>
+                    <strong className="text-white">{jobStatus.usageStats.totalCalls}</strong> API calls
+                  </span>
+                  <span className="text-white/30">•</span>
+                  <span>
+                    <strong className="text-white">{(jobStatus.usageStats.totalInputTokens / 1000).toFixed(1)}K</strong> input tokens
+                  </span>
+                  <span className="text-white/30">•</span>
+                  <span>
+                    <strong className="text-white">{(jobStatus.usageStats.totalOutputTokens / 1000).toFixed(1)}K</strong> output tokens
+                  </span>
+                  <span className="text-white/30">•</span>
+                  <span className="text-emerald-400 font-medium">
+                    ~${jobStatus.usageStats.estimatedCostUsd < 0.01 
+                      ? jobStatus.usageStats.estimatedCostUsd.toFixed(4) 
+                      : jobStatus.usageStats.estimatedCostUsd.toFixed(2)} estimated
+                  </span>
+                </div>
+              </div>
+            )}
 
             <div className="flex justify-center gap-4">
               <a

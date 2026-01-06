@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     stage_progress INTEGER DEFAULT 0,  -- 0-100 within current stage
     message TEXT,
     error TEXT,
+    activity_log TEXT,             -- JSON array of {timestamp, message}
+    usage_stats TEXT,              -- JSON: {totalInputTokens, totalOutputTokens, totalCalls, estimatedCostUsd}
     started_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );

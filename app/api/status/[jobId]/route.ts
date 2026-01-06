@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJob } from "@/lib/db";
+import { getJob, getActivityLog, getUsageStats } from "@/lib/db";
 import { INDEXING_STAGES } from "@/lib/types";
 
 export async function GET(
@@ -25,6 +25,12 @@ export async function GET(
     }
   }
 
+  // Get activity log (last 15 entries for UI)
+  const activityLog = getActivityLog(jobId).slice(-15);
+
+  // Get usage stats (only relevant when completed)
+  const usageStats = job.status === "completed" ? getUsageStats(jobId) : null;
+
   return NextResponse.json({
     id: job.id,
     status: job.status,
@@ -34,6 +40,8 @@ export async function GET(
     overallProgress: Math.round(overallProgress),
     message: job.message,
     error: job.error,
+    activityLog,
+    usageStats,
     startedAt: job.started_at,
     updatedAt: job.updated_at,
   });

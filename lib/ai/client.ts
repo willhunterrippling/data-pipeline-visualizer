@@ -11,7 +11,61 @@ function getClient(): OpenAI {
   return openai;
 }
 
-const DEFAULT_MODEL = "o1";
+const DEFAULT_MODEL = "gpt-5.2";
+
+// Model pricing per 1M tokens (USD)
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  "gpt-5.2": { input: 1.75, output: 14 },
+  "gpt-4.1": { input: 2, output: 8 },
+  "gpt-4.1-mini": { input: 0.4, output: 1.6 },
+  "gpt-4.1-nano": { input: 0.1, output: 0.4 },
+  "o1": { input: 15, output: 60 },
+  "o3": { input: 10, output: 40 },
+  "o3-mini": { input: 1.1, output: 4.4 },
+  "o4-mini": { input: 1.1, output: 4.4 },
+};
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  model: string;
+}
+
+export interface UsageStats {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCalls: number;
+  estimatedCostUsd: number;
+}
+
+// Session-level usage tracking
+let sessionUsage: TokenUsage[] = [];
+
+export function resetUsageTracking(): void {
+  sessionUsage = [];
+}
+
+export function getUsageStats(): UsageStats {
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let estimatedCostUsd = 0;
+
+  for (const usage of sessionUsage) {
+    totalInputTokens += usage.inputTokens;
+    totalOutputTokens += usage.outputTokens;
+
+    const pricing = MODEL_PRICING[usage.model] || MODEL_PRICING["gpt-5.2"];
+    estimatedCostUsd += (usage.inputTokens / 1_000_000) * pricing.input;
+    estimatedCostUsd += (usage.outputTokens / 1_000_000) * pricing.output;
+  }
+
+  return {
+    totalInputTokens,
+    totalOutputTokens,
+    totalCalls: sessionUsage.length,
+    estimatedCostUsd,
+  };
+}
 
 export interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -62,6 +116,15 @@ export async function complete(
     })),
     max_completion_tokens: options?.maxTokens || 4096,
   });
+
+  // Track token usage
+  if (response.usage) {
+    sessionUsage.push({
+      inputTokens: response.usage.prompt_tokens,
+      outputTokens: response.usage.completion_tokens,
+      model,
+    });
+  }
 
   return response.choices[0]?.message?.content || "";
 }

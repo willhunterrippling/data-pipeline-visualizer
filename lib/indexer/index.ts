@@ -12,6 +12,8 @@ import {
   updateJob,
   clearAllData,
   updateGroupNodeCounts,
+  appendActivityLog,
+  updateUsageStats,
   DbNode,
   DbEdge,
   DbCitation,
@@ -23,6 +25,7 @@ import { enrichWithSnowflakeMetadata } from "./snowflakeMetadata";
 import { inferGroups as aiInferGroups } from "../ai/grouping";
 import { proposeFlows as aiProposeFlows } from "../ai/flows";
 import { batchExplainNodes } from "../ai/explain";
+import { resetUsageTracking, getUsageStats as getAiUsageStats } from "../ai/client";
 import type { GraphNode, GraphEdge, Citation, IndexingStageId } from "../types";
 
 export interface IndexerConfig {
@@ -72,13 +75,38 @@ export class Indexer {
   private allNodes: GraphNode[] = [];
   private allEdges: GraphEdge[] = [];
   private allCitations: Citation[] = [];
+  private stageStartTime: number = 0;
+  private currentStage: IndexingStageId | null = null;
 
   constructor(jobId: string, config: IndexerConfig) {
     this.jobId = jobId;
     this.config = config;
   }
 
+  private log(message: string, stage?: IndexingStageId) {
+    const stageLabel = stage || this.currentStage || "init";
+    const logMessage = `[indexer:${stageLabel}] ${message}`;
+    console.log(logMessage);
+    appendActivityLog(this.jobId, message);
+  }
+
   private updateProgress(stage: IndexingStageId, stageProgress: number, message?: string) {
+    // Track stage transitions
+    if (stage !== this.currentStage) {
+      if (this.currentStage && this.stageStartTime) {
+        const elapsed = ((Date.now() - this.stageStartTime) / 1000).toFixed(1);
+        console.log(`[indexer] Stage complete: ${this.currentStage} (${elapsed}s)`);
+      }
+      console.log(`[indexer] Starting stage: ${stage}`);
+      this.currentStage = stage;
+      this.stageStartTime = Date.now();
+    }
+
+    // Log meaningful progress updates
+    if (message) {
+      this.log(message, stage);
+    }
+
     updateJob(this.jobId, {
       status: "running",
       stage,
@@ -89,6 +117,9 @@ export class Indexer {
 
   async run(): Promise<void> {
     try {
+      // Reset AI usage tracking for this job
+      resetUsageTracking();
+
       // Clear existing data
       clearAllData();
 
@@ -119,6 +150,17 @@ export class Indexer {
       // Stage 9: Pre-compute explanations
       await this.stagePrecomputeExplanations();
 
+      // Store AI usage stats
+      const usageStats = getAiUsageStats();
+      updateUsageStats(this.jobId, usageStats);
+
+      // Log usage summary
+      if (usageStats.totalCalls > 0) {
+        this.log(
+          `AI usage: ${usageStats.totalCalls} calls, ${(usageStats.totalInputTokens / 1000).toFixed(1)}K input tokens, ${(usageStats.totalOutputTokens / 1000).toFixed(1)}K output tokens, ~$${usageStats.estimatedCostUsd.toFixed(4)} estimated cost`
+        );
+      }
+
       // Mark complete
       updateJob(this.jobId, {
         status: "completed",
@@ -137,18 +179,18 @@ export class Indexer {
   }
 
   private async stageDbtCompile(): Promise<void> {
-    this.updateProgress("dbt_compile", 0, "Checking for existing manifest...");
+    this.updateProgress("dbt_compile", 0, `Checking dbt project at ${this.config.dbtPath}...`);
 
     const manifestPath = findManifestPath(this.config.dbtPath);
     
     if (manifestPath) {
-      this.updateProgress("dbt_compile", 100, "Using existing manifest.json");
+      this.updateProgress("dbt_compile", 100, "Found existing manifest.json, skipping compile");
       return;
     }
 
     // Try to run dbt compile, but don't fail if it doesn't work
     // (fallback parser will be used in stageParseManifest)
-    this.updateProgress("dbt_compile", 20, "Running dbt compile...");
+    this.updateProgress("dbt_compile", 20, "No manifest found, running dbt compile...");
     
     try {
       await new Promise<void>((resolve, reject) => {
@@ -176,11 +218,11 @@ export class Indexer {
         proc.on("error", reject);
       });
 
-      this.updateProgress("dbt_compile", 100, "dbt compile complete");
+      this.updateProgress("dbt_compile", 100, "dbt compile successful");
     } catch (error) {
       // dbt compile failed, but we can continue with fallback parsing
       console.warn("dbt compile failed, will use fallback SQL file parsing:", error);
-      this.updateProgress("dbt_compile", 100, "dbt compile unavailable, will use fallback parser");
+      this.updateProgress("dbt_compile", 100, "dbt compile unavailable, using fallback SQL parser");
     }
   }
 
@@ -264,7 +306,7 @@ export class Indexer {
   }
 
   private async stageCrossRepoLink(): Promise<void> {
-    this.updateProgress("cross_repo_link", 0, "Linking entities across repos...");
+    this.updateProgress("cross_repo_link", 0, `Linking ${this.allNodes.length} entities across repos...`);
 
     const { mergedNodes, additionalEdges, conflicts } = linkCrossRepo(
       this.allNodes,
@@ -274,20 +316,25 @@ export class Indexer {
     this.allNodes = mergedNodes;
     this.allEdges.push(...additionalEdges);
 
+    if (additionalEdges.length > 0) {
+      this.updateProgress("cross_repo_link", 30, `Found ${additionalEdges.length} cross-repo connections`);
+    }
+
     // Store nodes and edges in database
-    this.updateProgress("cross_repo_link", 50, "Storing nodes in database...");
+    this.updateProgress("cross_repo_link", 40, `Storing ${this.allNodes.length} nodes in database...`);
     insertNodes(this.allNodes.map(graphNodeToDb));
     
-    this.updateProgress("cross_repo_link", 70, "Storing edges in database...");
+    this.updateProgress("cross_repo_link", 60, `Storing ${this.allEdges.length} edges in database...`);
     insertEdges(this.allEdges.map(graphEdgeToDb));
     
-    this.updateProgress("cross_repo_link", 90, "Storing citations...");
+    this.updateProgress("cross_repo_link", 80, `Storing ${this.allCitations.length} source citations...`);
     insertCitations(this.allCitations.map(citationToDb));
 
+    const conflictMsg = conflicts.length > 0 ? `, ${conflicts.length} naming conflicts resolved` : "";
     this.updateProgress(
       "cross_repo_link",
       100,
-      `Linked ${this.allNodes.length} nodes, found ${conflicts.length} conflicts`
+      `Stored ${this.allNodes.length} nodes, ${this.allEdges.length} edges${conflictMsg}`
     );
   }
 
@@ -298,32 +345,40 @@ export class Indexer {
     const hasApiKey = !!process.env.OPENAI_API_KEY;
     
     if (hasApiKey) {
-      this.updateProgress("ai_grouping", 20, "Using AI to infer groups...");
       try {
-        groups = await aiInferGroups(this.allNodes);
+        groups = await aiInferGroups(this.allNodes, (progress, message) => {
+          // Map AI progress (0-90) to stage progress (0-70)
+          const mappedProgress = Math.round(progress * 0.7);
+          this.updateProgress("ai_grouping", mappedProgress, message);
+        });
       } catch (error) {
         console.warn("AI grouping failed, using fallback:", error);
+        this.log("AI grouping error, falling back to rule-based grouping");
         groups = inferGroups(this.allNodes);
       }
     } else {
+      this.updateProgress("ai_grouping", 10, "No AI API key, using rule-based grouping...");
       groups = inferGroups(this.allNodes);
     }
 
-    this.updateProgress("ai_grouping", 50, "Storing groups...");
+    this.updateProgress("ai_grouping", 75, `Storing ${groups.length} groups in database...`);
     // Both AI and fallback grouping now return the same DB-ready format
     insertGroups(groups);
 
+    this.updateProgress("ai_grouping", 85, "Updating node group assignments...");
     // Update nodes with group assignments
     const db = getDb();
+    let assignedCount = 0;
     for (const node of this.allNodes) {
       if (node.groupId) {
         db.prepare("UPDATE nodes SET group_id = ? WHERE id = ?").run(node.groupId, node.id);
+        assignedCount++;
       }
     }
 
     updateGroupNodeCounts();
 
-    this.updateProgress("ai_grouping", 100, `Created ${groups.length} groups`);
+    this.updateProgress("ai_grouping", 100, `Created ${groups.length} groups, assigned ${assignedCount} nodes`);
   }
 
   private async stageAiFlows(): Promise<void> {
@@ -333,18 +388,23 @@ export class Indexer {
     const hasApiKey = !!process.env.OPENAI_API_KEY;
     
     if (hasApiKey) {
-      this.updateProgress("ai_flows", 20, "Using AI to propose flows...");
       try {
-        flows = await aiProposeFlows(this.allNodes, this.allEdges);
+        flows = await aiProposeFlows(this.allNodes, this.allEdges, (progress, message) => {
+          // Map AI progress (0-90) to stage progress (0-70)
+          const mappedProgress = Math.round(progress * 0.7);
+          this.updateProgress("ai_flows", mappedProgress, message);
+        });
       } catch (error) {
         console.warn("AI flow proposal failed, using fallback:", error);
+        this.log("AI flow proposal error, using predefined flows");
         flows = proposeFlows(this.allNodes, this.allEdges);
       }
     } else {
+      this.updateProgress("ai_flows", 10, "No AI API key, using predefined flows...");
       flows = proposeFlows(this.allNodes, this.allEdges);
     }
 
-    this.updateProgress("ai_flows", 50, "Storing flows...");
+    this.updateProgress("ai_flows", 75, `Storing ${flows.length} flows in database...`);
     for (const flow of flows) {
       insertFlow({
         id: flow.id,
@@ -357,11 +417,12 @@ export class Indexer {
       });
     }
 
-    this.updateProgress("ai_flows", 100, `Proposed ${flows.length} flows`);
+    const flowNames = flows.map(f => f.name).slice(0, 3).join(", ");
+    this.updateProgress("ai_flows", 100, `Created ${flows.length} flows: ${flowNames}${flows.length > 3 ? "..." : ""}`);
   }
 
   private async stagePrecomputeExplanations(): Promise<void> {
-    this.updateProgress("precompute_explanations", 0, "Generating explanations for key models...");
+    this.updateProgress("precompute_explanations", 0, "Identifying key models for explanation...");
 
     // Get key nodes (marts, reports, P1 priority)
     const keyNodes = this.allNodes.filter(
@@ -374,16 +435,20 @@ export class Indexer {
     const hasApiKey = !!process.env.OPENAI_API_KEY;
     
     if (hasApiKey && keyNodes.length > 0) {
-      this.updateProgress("precompute_explanations", 10, `Pre-computing explanations for ${keyNodes.length} key models...`);
+      const keyNodeNames = keyNodes.slice(0, 3).map(n => n.name).join(", ");
+      this.updateProgress("precompute_explanations", 5, `Found ${keyNodes.length} key models: ${keyNodeNames}...`);
       
       try {
         const explanations = await batchExplainNodes(keyNodes, {
           repoPath: this.config.dbtPath,
           onProgress: (completed, total) => {
-            const progress = 10 + Math.floor((completed / total) * 85);
-            this.updateProgress("precompute_explanations", progress, `Explained ${completed}/${total} models`);
+            const progress = 10 + Math.floor((completed / total) * 80);
+            const currentNode = keyNodes[completed - 1]?.name || "";
+            this.updateProgress("precompute_explanations", progress, `Explaining ${currentNode} (${completed}/${total})`);
           },
         });
+
+        this.updateProgress("precompute_explanations", 95, "Storing explanations in database...");
 
         // Store explanations
         for (const [nodeId, summary] of explanations) {
@@ -398,21 +463,22 @@ export class Indexer {
         this.updateProgress(
           "precompute_explanations",
           100,
-          `Generated ${explanations.size} explanations`
+          `Generated ${explanations.size} AI explanations for key models`
         );
       } catch (error) {
         console.warn("Pre-compute explanations failed:", error);
         this.updateProgress(
           "precompute_explanations",
           100,
-          `Skipped pre-compute (will generate on-demand)`
+          `Explanation pre-compute skipped (will generate on-demand)`
         );
       }
     } else {
+      const reason = !hasApiKey ? "No AI API key" : "No key models found";
       this.updateProgress(
         "precompute_explanations",
         100,
-        `Identified ${keyNodes.length} key models for on-demand explanation`
+        `${reason}, explanations will be generated on-demand`
       );
     }
   }

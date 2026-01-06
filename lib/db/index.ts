@@ -2,30 +2,33 @@ import Database from "better-sqlite3";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-const DB_PATH = process.env.DATABASE_PATH || "./data/pipeline.db";
+// Use absolute path to ensure consistency across API routes
+const DB_PATH = process.env.DATABASE_PATH || join(process.cwd(), "data/pipeline.db");
 
-let db: Database.Database | null = null;
+// Use globalThis to persist the database connection across module reloads in dev mode
+const globalForDb = globalThis as unknown as { pipelineDb: Database.Database | undefined };
 
 export function getDb(): Database.Database {
-  if (!db) {
-    db = new Database(DB_PATH);
-    db.pragma("journal_mode = WAL");
-    db.pragma("foreign_keys = ON");
-    initSchema();
+  if (!globalForDb.pipelineDb) {
+    globalForDb.pipelineDb = new Database(DB_PATH);
+    globalForDb.pipelineDb.pragma("journal_mode = WAL");
+    globalForDb.pipelineDb.pragma("synchronous = NORMAL");
+    globalForDb.pipelineDb.pragma("foreign_keys = ON");
+    initSchema(globalForDb.pipelineDb);
   }
-  return db;
+  return globalForDb.pipelineDb;
 }
 
-function initSchema() {
+function initSchema(db: Database.Database) {
   const schemaPath = join(process.cwd(), "lib/db/schema.sql");
   const schema = readFileSync(schemaPath, "utf-8");
-  db!.exec(schema);
+  db.exec(schema);
 }
 
 export function closeDb() {
-  if (db) {
-    db.close();
-    db = null;
+  if (globalForDb.pipelineDb) {
+    globalForDb.pipelineDb.close();
+    globalForDb.pipelineDb = undefined;
   }
 }
 
@@ -86,6 +89,18 @@ export interface DbExplanation {
   model_used: string | null;
 }
 
+export interface ActivityLogEntry {
+  timestamp: string;
+  message: string;
+}
+
+export interface UsageStats {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCalls: number;
+  estimatedCostUsd: number;
+}
+
 export interface DbJob {
   id: string;
   status: string;
@@ -93,6 +108,8 @@ export interface DbJob {
   stage_progress: number;
   message: string | null;
   error: string | null;
+  activity_log: string | null;  // JSON array of ActivityLogEntry
+  usage_stats: string | null;   // JSON: UsageStats
   started_at: string;
   updated_at: string;
 }
@@ -261,8 +278,8 @@ export function getExplanation(nodeId: string): DbExplanation | undefined {
 export function createJob(id: string): DbJob {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT INTO jobs (id, status, stage, stage_progress, message)
-    VALUES (?, 'pending', NULL, 0, NULL)
+    INSERT INTO jobs (id, status, stage, stage_progress, message, activity_log)
+    VALUES (?, 'pending', NULL, 0, NULL, '[]')
   `);
   stmt.run(id);
   return getJob(id)!;
@@ -302,6 +319,44 @@ export function updateJob(id: string, update: Partial<Pick<DbJob, "status" | "st
 export function getJob(id: string): DbJob | undefined {
   const db = getDb();
   return db.prepare("SELECT * FROM jobs WHERE id = ?").get(id) as DbJob | undefined;
+}
+
+const MAX_ACTIVITY_LOG_ENTRIES = 50;
+
+export function appendActivityLog(id: string, message: string): void {
+  const db = getDb();
+  const job = getJob(id);
+  if (!job) return;
+
+  const log: ActivityLogEntry[] = job.activity_log ? JSON.parse(job.activity_log) : [];
+  log.push({
+    timestamp: new Date().toISOString(),
+    message,
+  });
+
+  // Keep only the last N entries
+  const trimmedLog = log.slice(-MAX_ACTIVITY_LOG_ENTRIES);
+
+  db.prepare("UPDATE jobs SET activity_log = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(trimmedLog), id);
+}
+
+export function getActivityLog(id: string): ActivityLogEntry[] {
+  const job = getJob(id);
+  if (!job || !job.activity_log) return [];
+  return JSON.parse(job.activity_log);
+}
+
+export function updateUsageStats(id: string, stats: UsageStats): void {
+  const db = getDb();
+  db.prepare("UPDATE jobs SET usage_stats = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(stats), id);
+}
+
+export function getUsageStats(id: string): UsageStats | null {
+  const job = getJob(id);
+  if (!job || !job.usage_stats) return null;
+  return JSON.parse(job.usage_stats);
 }
 
 // Search operations
@@ -350,7 +405,7 @@ export function getDownstreamNodes(nodeId: string, depth = 3): DbNode[] {
   `).all(nodeId, depth) as DbNode[];
 }
 
-// Clear all data (for re-indexing)
+// Clear all data (for re-indexing) - but keep jobs for status tracking
 export function clearAllData() {
   const db = getDb();
   db.exec(`
@@ -360,7 +415,6 @@ export function clearAllData() {
     DELETE FROM groups;
     DELETE FROM edges;
     DELETE FROM nodes;
-    DELETE FROM jobs;
   `);
 }
 

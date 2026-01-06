@@ -59,10 +59,19 @@ Example output:
   ]
 }`;
 
+export interface GroupingProgressCallback {
+  (progress: number, message: string): void;
+}
+
 /**
  * Use AI to infer groups from node list
  */
-export async function inferGroups(nodes: GraphNode[]): Promise<DbGroupInput[]> {
+export async function inferGroups(
+  nodes: GraphNode[],
+  onProgress?: GroupingProgressCallback
+): Promise<DbGroupInput[]> {
+  onProgress?.(0, `Analyzing ${nodes.length} nodes for grouping patterns...`);
+
   // Build node summary for AI
   const nodeSummary = nodes.slice(0, 500).map((n) => ({
     name: n.name,
@@ -70,6 +79,8 @@ export async function inferGroups(nodes: GraphNode[]): Promise<DbGroupInput[]> {
     tags: n.metadata?.tags,
     schema: n.metadata?.schema,
   }));
+
+  onProgress?.(10, "Extracting naming patterns and tags...");
 
   // Get tag frequency
   const tagCounts = new Map<string, number>();
@@ -96,6 +107,8 @@ export async function inferGroups(nodes: GraphNode[]): Promise<DbGroupInput[]> {
     .slice(0, 10)
     .map(([prefix, count]) => `${prefix} (${count})`);
 
+  onProgress?.(15, `Found prefixes: ${topPrefixes.slice(0, 4).map(p => p.split(' ')[0]).join(', ')}...`);
+
   const userMessage = `Analyze these ${nodes.length} data pipeline nodes and create logical groups.
 
 Top prefixes found: ${topPrefixes.join(", ")}
@@ -106,11 +119,21 @@ ${JSON.stringify(nodeSummary, null, 2)}
 
 Create groups that would help users navigate this data pipeline. Consider both layer-based groups (staging, intermediate, marts) and domain-based groups.`;
 
+  const promptSize = (GROUPING_PROMPT.length + userMessage.length) / 1024;
+  onProgress?.(20, `Sending AI request (${promptSize.toFixed(1)}KB prompt)...`);
+
+  const startTime = Date.now();
+
   try {
+    onProgress?.(25, "Waiting for AI response...");
+    
     const result = await completeJson<GroupingResult>([
       { role: "system", content: GROUPING_PROMPT },
       { role: "user", content: userMessage },
     ]);
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    onProgress?.(60, `AI response received in ${elapsed}s, processing ${result.groups.length} groups...`);
 
     // Convert to DB-ready format
     const groups: DbGroupInput[] = result.groups.map((g) => ({
@@ -122,7 +145,10 @@ Create groups that would help users navigate this data pipeline. Consider both l
       collapsed_default: 1,
     }));
 
+    onProgress?.(70, `Assigning ${nodes.length} nodes to groups...`);
+
     // Assign nodes to groups based on patterns
+    let assigned = 0;
     for (const node of nodes) {
       for (const group of result.groups) {
         for (const pattern of group.nodePatterns) {
@@ -130,12 +156,14 @@ Create groups that would help users navigate this data pipeline. Consider both l
             const regex = new RegExp(pattern, "i");
             if (regex.test(node.name)) {
               node.groupId = group.id;
+              assigned++;
               break;
             }
           } catch {
             // Invalid regex, try string match
             if (node.name.toLowerCase().includes(pattern.toLowerCase())) {
               node.groupId = group.id;
+              assigned++;
               break;
             }
           }
@@ -144,9 +172,12 @@ Create groups that would help users navigate this data pipeline. Consider both l
       }
     }
 
+    onProgress?.(90, `Assigned ${assigned} nodes to ${groups.length} groups`);
+
     return groups;
   } catch (error) {
     console.error("AI grouping failed, using fallback:", error);
+    onProgress?.(50, "AI request failed, using rule-based grouping...");
     return fallbackGrouping(nodes);
   }
 }

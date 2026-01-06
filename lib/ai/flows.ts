@@ -121,13 +121,20 @@ Example output:
   ]
 }`;
 
+export interface FlowProgressCallback {
+  (progress: number, message: string): void;
+}
+
 /**
  * Use AI to propose flows based on graph structure
  */
 export async function proposeFlows(
   nodes: GraphNode[],
-  edges: GraphEdge[]
+  edges: GraphEdge[],
+  onProgress?: FlowProgressCallback
 ): Promise<GraphFlow[]> {
+  onProgress?.(0, `Analyzing ${nodes.length} nodes for flow patterns...`);
+
   // Find potential anchor nodes (marts, reports)
   const anchorCandidates = nodes.filter(
     (n) =>
@@ -135,6 +142,8 @@ export async function proposeFlows(
       n.name.startsWith("rpt_") ||
       n.metadata?.tags?.includes("p1")
   );
+
+  onProgress?.(5, `Found ${anchorCandidates.length} potential anchor tables (marts/reports)...`);
 
   // Build adjacency for traversal
   const upstreamMap = new Map<string, Set<string>>();
@@ -144,6 +153,8 @@ export async function proposeFlows(
     }
     upstreamMap.get(edge.to)!.add(edge.from);
   }
+
+  onProgress?.(10, "Building dependency graph for flow traversal...");
 
   // Get upstream depth for each anchor
   const anchorInfo = anchorCandidates.map((anchor) => {
@@ -169,6 +180,9 @@ export async function proposeFlows(
     };
   });
 
+  const matchedFlows = predefinedFlowStatus.filter(f => f.hasMatch).length;
+  onProgress?.(15, `Checking ${KNOWN_FLOW_TEMPLATES.length} known flow patterns (${matchedFlows} matched)...`);
+
   const userMessage = `Analyze this data pipeline and propose logical flows.
 
 Found ${nodes.length} total nodes, ${edges.length} edges.
@@ -185,21 +199,36 @@ Please:
 1. For each predefined flow, suggest refinements if needed (updated patterns, descriptions, or skip reasons)
 2. Propose 2-4 additional key flows that would help users understand other major data pipelines`;
 
+  const promptSize = (FLOW_PROMPT.length + userMessage.length) / 1024;
+  onProgress?.(20, `Sending AI request (${promptSize.toFixed(1)}KB prompt)...`);
+
+  const startTime = Date.now();
+
   try {
+    onProgress?.(25, "Waiting for AI response...");
+
     const result = await completeJson<FlowProposalResult>([
       { role: "system", content: FLOW_PROMPT },
       { role: "user", content: userMessage },
     ]);
 
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const newFlowCount = result.flows?.length || 0;
+    const refinedCount = result.refinedFlows?.length || 0;
+    onProgress?.(50, `AI response in ${elapsed}s: ${newFlowCount} new flows, ${refinedCount} refinements`);
+
     const flows: GraphFlow[] = [];
 
     // Build a map of refinements by original name
-    const refinements = new Map<string, (typeof result.refinedFlows)[number]>();
+    type RefinedFlow = NonNullable<typeof result.refinedFlows>[number];
+    const refinements = new Map<string, RefinedFlow>();
     if (result.refinedFlows) {
       for (const refined of result.refinedFlows) {
         refinements.set(refined.originalName, refined);
       }
     }
+
+    onProgress?.(60, "Processing predefined flow templates...");
 
     // Process predefined flows with AI refinements
     for (const template of KNOWN_FLOW_TEMPLATES) {
@@ -245,6 +274,8 @@ Please:
       });
     }
 
+    onProgress?.(75, `Created ${flows.length} predefined flows, processing AI proposals...`);
+
     // Process new AI-proposed flows
     for (const proposal of result.flows || []) {
       // Skip if we already have a flow with this name
@@ -275,9 +306,12 @@ Please:
       });
     }
 
+    onProgress?.(90, `Finalized ${flows.length} total flows`);
+
     return flows;
   } catch (error) {
     console.error("AI flow proposal failed, using fallback:", error);
+    onProgress?.(50, "AI request failed, using predefined flows...");
     return getKnownFlows(nodes, upstreamMap);
   }
 }

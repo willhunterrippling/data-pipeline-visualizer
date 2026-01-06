@@ -1,19 +1,26 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import type { GraphNode } from "@/lib/types";
 
 interface SearchBarProps {
   onSelect: (node: GraphNode) => void;
 }
 
-export default function SearchBar({ onSelect }: SearchBarProps) {
+const SearchBar = forwardRef<HTMLInputElement, SearchBarProps>(function SearchBar(
+  { onSelect },
+  ref
+) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GraphNode[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Expose the input ref
+  useImperativeHandle(ref, () => inputRef.current!);
 
   useEffect(() => {
     const handler = setTimeout(async () => {
@@ -28,6 +35,7 @@ export default function SearchBar({ onSelect }: SearchBarProps) {
         const data = await res.json();
         setResults(data.nodes || []);
         setIsOpen(true);
+        setSelectedIndex(0);
       } catch (error) {
         console.error("Search failed:", error);
       } finally {
@@ -52,6 +60,17 @@ export default function SearchBar({ onSelect }: SearchBarProps) {
     if (e.key === "Escape") {
       setIsOpen(false);
       inputRef.current?.blur();
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedIndex((prev) => Math.min(prev + 1, results.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedIndex((prev) => Math.max(prev - 1, 0));
+    } else if (e.key === "Enter" && results[selectedIndex]) {
+      e.preventDefault();
+      onSelect(results[selectedIndex]);
+      setIsOpen(false);
+      setQuery("");
     }
   };
 
@@ -78,7 +97,7 @@ export default function SearchBar({ onSelect }: SearchBarProps) {
           onChange={(e) => setQuery(e.target.value)}
           onFocus={() => query.length >= 2 && setIsOpen(true)}
           onKeyDown={handleKeyDown}
-          placeholder="Search tables, models..."
+          placeholder="Search tables... (/)"
           className="w-64 pl-10 pr-4 py-2 bg-white/10 border border-white/10 rounded-lg text-sm placeholder-white/40 focus:outline-none focus:border-white/30 focus:bg-white/15 transition-colors"
         />
         {isLoading && (
@@ -91,7 +110,7 @@ export default function SearchBar({ onSelect }: SearchBarProps) {
       {isOpen && results.length > 0 && (
         <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a2e] border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden animate-slide-up">
           <div className="p-2 max-h-80 overflow-y-auto">
-            {results.map((node) => (
+            {results.map((node, index) => (
               <button
                 key={node.id}
                 onClick={() => {
@@ -99,7 +118,11 @@ export default function SearchBar({ onSelect }: SearchBarProps) {
                   setIsOpen(false);
                   setQuery("");
                 }}
-                className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/10 transition-colors"
+                className={`w-full text-left px-3 py-2 rounded-lg transition-colors ${
+                  index === selectedIndex
+                    ? "bg-white/10"
+                    : "hover:bg-white/5"
+                }`}
               >
                 <div className="flex items-center gap-2">
                   <span
@@ -119,9 +142,19 @@ export default function SearchBar({ onSelect }: SearchBarProps) {
               </button>
             ))}
           </div>
+          <div className="px-3 py-2 border-t border-white/10 text-xs text-white/40">
+            ↑↓ to navigate · Enter to select · Esc to close
+          </div>
+        </div>
+      )}
+
+      {isOpen && query.length >= 2 && results.length === 0 && !isLoading && (
+        <div className="absolute top-full left-0 mt-2 w-80 bg-[#1a1a2e] border border-white/10 rounded-xl shadow-xl z-50 p-4 text-center text-white/50 text-sm">
+          No results found for "{query}"
         </div>
       )}
     </div>
   );
-}
+});
 
+export default SearchBar;

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import FlowSelector from "@/components/FlowSelector";
 import SearchBar from "@/components/SearchBar";
@@ -8,6 +9,7 @@ import DepthControl from "@/components/DepthControl";
 import MiniMap from "@/components/MiniMap";
 import CreateFlowModal from "@/components/CreateFlowModal";
 import type { GraphNode, GraphEdge, GraphGroup, GraphFlow } from "@/lib/types";
+import type { GraphExplorerRef } from "@/components/GraphExplorer";
 
 // Dynamically import GraphExplorer to avoid SSR issues with Cytoscape
 const GraphExplorer = dynamic(() => import("@/components/GraphExplorer"), {
@@ -27,7 +29,13 @@ interface SidePanelData {
   isLoadingExplanation: boolean;
 }
 
-export default function ExplorerPage() {
+function ExplorerContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  
+  const graphRef = useRef<GraphExplorerRef>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [groups, setGroups] = useState<GraphGroup[]>([]);
@@ -38,6 +46,28 @@ export default function ExplorerPage() {
   const [error, setError] = useState<string | null>(null);
   const [neighborhoodDepth, setNeighborhoodDepth] = useState(3);
   const [showCreateFlow, setShowCreateFlow] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
+  // Show toast notification
+  const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  // Update URL when flow changes
+  const updateUrl = useCallback((flowId?: string, nodeId?: string) => {
+    const params = new URLSearchParams();
+    if (flowId) params.set("flow", flowId);
+    if (nodeId) params.set("node", nodeId);
+    const newUrl = params.toString() ? `?${params.toString()}` : "/explorer";
+    router.replace(newUrl, { scroll: false });
+  }, [router]);
+
+  // Handle flow selection
+  const handleFlowSelect = useCallback((flowId: string | undefined) => {
+    setSelectedFlow(flowId);
+    updateUrl(flowId, sidePanel?.node.id);
+  }, [updateUrl, sidePanel]);
 
   // Load graph data
   useEffect(() => {
@@ -51,6 +81,25 @@ export default function ExplorerPage() {
         setEdges(data.edges);
         setGroups(data.groups);
         setFlows(data.flows);
+
+        // Restore state from URL
+        const flowId = searchParams.get("flow");
+        const nodeId = searchParams.get("node");
+        
+        if (flowId && data.flows.some((f: GraphFlow) => f.id === flowId)) {
+          setSelectedFlow(flowId);
+        }
+        
+        // Focus node from URL after graph loads
+        if (nodeId) {
+          setTimeout(() => {
+            const node = data.nodes.find((n: GraphNode) => n.id === nodeId);
+            if (node) {
+              handleNodeSelect(node);
+              graphRef.current?.focusNode(nodeId);
+            }
+          }, 500);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unknown error");
       } finally {
@@ -58,14 +107,18 @@ export default function ExplorerPage() {
       }
     }
     loadGraph();
-  }, []);
+  }, [searchParams]);
 
   // Handle node selection
   const handleNodeSelect = useCallback(async (node: GraphNode | null) => {
     if (!node) {
       setSidePanel(null);
+      updateUrl(selectedFlow);
       return;
     }
+
+    // Update URL
+    updateUrl(selectedFlow, node.id);
 
     // Fetch node details
     try {
@@ -101,19 +154,66 @@ export default function ExplorerPage() {
     } catch (err) {
       console.error("Failed to load node details:", err);
     }
-  }, []);
+  }, [selectedFlow, updateUrl]);
 
   // Handle node double-click (column lineage)
   const handleNodeDoubleClick = useCallback((node: GraphNode) => {
-    // Open column lineage view - for MVP, just log
-    console.log("Double-click:", node);
-  }, []);
+    // TODO: Open column lineage modal
+    showToast(`Double-clicked: ${node.name}`);
+  }, [showToast]);
 
-  // Handle search selection
+  // Handle search selection - focus on node in graph
   const handleSearchSelect = useCallback((node: GraphNode) => {
     handleNodeSelect(node);
-    // TODO: Focus on node in graph
+    setTimeout(() => {
+      graphRef.current?.focusNode(node.id);
+    }, 100);
   }, [handleNodeSelect]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      // Don't trigger if in an input
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        if (e.key === "Escape") {
+          (e.target as HTMLElement).blur();
+        }
+        return;
+      }
+
+      switch (e.key) {
+        case "Escape":
+          setSidePanel(null);
+          updateUrl(selectedFlow);
+          break;
+        case "/":
+          e.preventDefault();
+          searchInputRef.current?.focus();
+          break;
+        case "f":
+        case "F":
+          graphRef.current?.fitToScreen();
+          break;
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedFlow, updateUrl]);
+
+  // Re-index handler
+  const handleReindex = useCallback(async () => {
+    try {
+      showToast("Starting re-index...");
+      const res = await fetch("/api/ingest", { method: "POST" });
+      if (!res.ok) throw new Error("Failed to start re-index");
+      
+      const { jobId } = await res.json();
+      router.push(`/?jobId=${jobId}`);
+    } catch (err) {
+      showToast("Failed to start re-index", "error");
+    }
+  }, [router, showToast]);
 
   if (isLoading) {
     return (
@@ -138,6 +238,19 @@ export default function ExplorerPage() {
 
   return (
     <div className="h-screen bg-[#0a0a0f] flex flex-col overflow-hidden">
+      {/* Toast Notification */}
+      {toast && (
+        <div
+          className={`fixed top-4 right-4 z-50 px-4 py-2 rounded-lg shadow-lg animate-slide-up ${
+            toast.type === "error"
+              ? "bg-red-500/90 text-white"
+              : "bg-emerald-500/90 text-black"
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
+
       {/* Header */}
       <header className="border-b border-white/10 bg-[#0a0a0f]/80 backdrop-blur-sm z-10">
         <div className="px-4 py-3 flex items-center justify-between">
@@ -156,7 +269,7 @@ export default function ExplorerPage() {
             <FlowSelector
               flows={flows}
               selectedFlow={selectedFlow}
-              onSelect={setSelectedFlow}
+              onSelect={handleFlowSelect}
             />
             
             <button
@@ -168,12 +281,22 @@ export default function ExplorerPage() {
           </div>
 
           <div className="flex items-center gap-4">
-            <SearchBar onSelect={handleSearchSelect} />
+            <SearchBar onSelect={handleSearchSelect} ref={searchInputRef} />
             <DepthControl depth={neighborhoodDepth} onChange={setNeighborhoodDepth} />
             
             <div className="text-sm text-white/40">
               {nodes.length} nodes · {edges.length} edges
             </div>
+
+            <button
+              onClick={handleReindex}
+              className="px-3 py-2 text-sm text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
+              title="Re-index repositories"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
           </div>
         </div>
       </header>
@@ -183,6 +306,7 @@ export default function ExplorerPage() {
         {/* Graph */}
         <div className="flex-1 relative">
           <GraphExplorer
+            ref={graphRef}
             nodes={nodes}
             edges={edges}
             groups={groups}
@@ -231,14 +355,32 @@ export default function ExplorerPage() {
                   </p>
                 </div>
                 <button
-                  onClick={() => setSidePanel(null)}
+                  onClick={() => {
+                    setSidePanel(null);
+                    updateUrl(selectedFlow);
+                  }}
                   className="p-1 hover:bg-white/10 rounded transition-colors"
+                  title="Close (Esc)"
                 >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
                 </button>
               </div>
+
+              {/* Copy Link Button */}
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(window.location.href);
+                  showToast("Link copied to clipboard");
+                }}
+                className="w-full px-3 py-2 text-sm bg-white/5 hover:bg-white/10 rounded-lg transition-colors flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+                </svg>
+                Share Link
+              </button>
 
               {/* Explanation */}
               <div>
@@ -301,7 +443,10 @@ export default function ExplorerPage() {
                     {sidePanel.upstream.map((node) => (
                       <button
                         key={node.id}
-                        onClick={() => handleNodeSelect(node)}
+                        onClick={() => {
+                          handleNodeSelect(node);
+                          graphRef.current?.focusNode(node.id);
+                        }}
                         className="w-full text-left px-2 py-1.5 rounded hover:bg-white/10 text-sm transition-colors"
                       >
                         <span className="text-emerald-400">←</span>{" "}
@@ -322,7 +467,10 @@ export default function ExplorerPage() {
                     {sidePanel.downstream.map((node) => (
                       <button
                         key={node.id}
-                        onClick={() => handleNodeSelect(node)}
+                        onClick={() => {
+                          handleNodeSelect(node);
+                          graphRef.current?.focusNode(node.id);
+                        }}
                         className="w-full text-left px-2 py-1.5 rounded hover:bg-white/10 text-sm transition-colors"
                       >
                         <span className="text-cyan-400">→</span>{" "}
@@ -343,7 +491,8 @@ export default function ExplorerPage() {
                     {sidePanel.node.metadata.columns.map((col) => (
                       <div
                         key={col.name}
-                        className="flex justify-between py-1 px-2 hover:bg-white/5 rounded"
+                        className="flex justify-between py-1 px-2 hover:bg-white/5 rounded cursor-pointer"
+                        title={col.description || undefined}
                       >
                         <span className="text-white/80">{col.name}</span>
                         <span className="text-white/40">{col.type}</span>
@@ -378,6 +527,7 @@ export default function ExplorerPage() {
             .then((data) => {
               setFlows(data.flows);
               setSelectedFlow(newFlow.id);
+              showToast(`Created flow "${newFlow.name}" with ${newFlow.memberCount} nodes`);
             });
         }}
       />
@@ -385,3 +535,17 @@ export default function ExplorerPage() {
   );
 }
 
+// Wrap in Suspense for useSearchParams
+export default function ExplorerPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="h-screen bg-[#0a0a0f] flex items-center justify-center">
+          <div className="text-white/60">Loading...</div>
+        </div>
+      }
+    >
+      <ExplorerContent />
+    </Suspense>
+  );
+}

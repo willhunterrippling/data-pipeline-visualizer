@@ -1,8 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from "react";
 import cytoscape, { Core, NodeSingular } from "cytoscape";
 import type { GraphNode, GraphEdge, GraphGroup, GraphFlow } from "@/lib/types";
+
+export interface GraphExplorerRef {
+  focusNode: (nodeId: string) => void;
+  fitToScreen: () => void;
+}
 
 interface GraphExplorerProps {
   nodes: GraphNode[];
@@ -32,18 +37,41 @@ const GROUP_COLORS = [
   { bg: "#2e2e1a", border: "#6a6a4a" },
 ];
 
-export default function GraphExplorer({
-  nodes,
-  edges,
-  groups,
-  flows,
-  selectedFlow,
-  onNodeSelect,
-  onNodeDoubleClick,
-}: GraphExplorerProps) {
+const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function GraphExplorer(
+  {
+    nodes,
+    edges,
+    groups,
+    flows,
+    selectedFlow,
+    onNodeSelect,
+    onNodeDoubleClick,
+  },
+  ref
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  // Expose methods to parent
+  useImperativeHandle(ref, () => ({
+    focusNode: (nodeId: string) => {
+      if (!cyRef.current) return;
+      const node = cyRef.current.getElementById(nodeId);
+      if (node.length > 0) {
+        cyRef.current.animate({
+          center: { eles: node },
+          zoom: 1.5,
+        }, {
+          duration: 500,
+        });
+        node.select();
+      }
+    },
+    fitToScreen: () => {
+      cyRef.current?.fit(undefined, 50);
+    },
+  }));
 
   // Initialize collapsed groups from defaults
   useEffect(() => {
@@ -89,6 +117,7 @@ export default function GraphExplorer({
           groupId: group.id,
           nodeCount: groupNodes.length,
           collapsed: collapsedGroups.has(group.id),
+          description: group.description,
         },
         classes: "group-node",
       });
@@ -109,6 +138,8 @@ export default function GraphExplorer({
           nodeType: node.type,
           subtype: node.subtype,
           repo: node.repo,
+          description: node.metadata?.description,
+          schema: node.metadata?.schema,
           ...colors,
         },
         classes: `node-${node.type}`,
@@ -134,6 +165,7 @@ export default function GraphExplorer({
           source: edge.from,
           target: edge.to,
           edgeType: edge.type,
+          label: edge.type.replace("_", " "),
         },
         classes: `edge-${edge.type}`,
       });
@@ -281,6 +313,24 @@ export default function GraphExplorer({
       wheelSensitivity: 0.3,
     });
 
+    // Tooltip element
+    const tooltip = document.createElement("div");
+    tooltip.className = "cy-tooltip";
+    tooltip.style.cssText = `
+      position: absolute;
+      background: rgba(0, 0, 0, 0.9);
+      color: white;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      pointer-events: none;
+      z-index: 1000;
+      display: none;
+      max-width: 300px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    `;
+    containerRef.current?.appendChild(tooltip);
+
     // Event handlers
     cy.on("tap", "node:not(.group-node)", (evt) => {
       const node = evt.target as NodeSingular;
@@ -324,9 +374,43 @@ export default function GraphExplorer({
       }
     });
 
+    // Tooltip on hover
+    cy.on("mouseover", "node:not(.group-node)", (evt) => {
+      const node = evt.target;
+      const data = node.data();
+      
+      let content = `<strong>${data.label}</strong>`;
+      if (data.nodeType) content += `<br/>Type: ${data.nodeType}`;
+      if (data.schema) content += `<br/>Schema: ${data.schema}`;
+      if (data.description) content += `<br/>${data.description.substring(0, 100)}...`;
+      
+      tooltip.innerHTML = content;
+      tooltip.style.display = "block";
+    });
+
+    cy.on("mouseover", "edge", (evt) => {
+      const edge = evt.target;
+      const data = edge.data();
+      
+      tooltip.innerHTML = `<strong>${data.edgeType?.replace("_", " ") || "dependency"}</strong>`;
+      tooltip.style.display = "block";
+    });
+
+    cy.on("mouseout", "node, edge", () => {
+      tooltip.style.display = "none";
+    });
+
+    cy.on("mousemove", (evt) => {
+      if (tooltip.style.display === "block") {
+        tooltip.style.left = `${evt.originalEvent.offsetX + 10}px`;
+        tooltip.style.top = `${evt.originalEvent.offsetY + 10}px`;
+      }
+    });
+
     cyRef.current = cy;
 
     return () => {
+      tooltip.remove();
       cy.destroy();
     };
   }, []); // Only run once on mount
@@ -373,7 +457,7 @@ export default function GraphExplorer({
         <button
           onClick={zoomIn}
           className="w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-          title="Zoom In"
+          title="Zoom In (or scroll)"
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v12M6 12h12" />
@@ -391,7 +475,7 @@ export default function GraphExplorer({
         <button
           onClick={fitToScreen}
           className="w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-          title="Fit to Screen"
+          title="Fit to Screen (F)"
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
@@ -417,8 +501,19 @@ export default function GraphExplorer({
           <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.external.border }} />
           <span className="text-white/70">External</span>
         </div>
+        <div className="border-t border-white/10 my-2" />
+        <div className="text-white/40">Click group to expand/collapse</div>
+        <div className="text-white/40">Double-click node for details</div>
+      </div>
+
+      {/* Keyboard shortcuts hint */}
+      <div className="absolute top-4 left-4 text-xs text-white/30">
+        Press <kbd className="px-1.5 py-0.5 bg-white/10 rounded">Esc</kbd> to deselect · 
+        <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">/</kbd> to search · 
+        <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">F</kbd> to fit
       </div>
     </div>
   );
-}
+});
 
+export default GraphExplorer;

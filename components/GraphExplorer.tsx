@@ -174,13 +174,50 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
     return elements;
   }, [nodes, edges, groups, flows, selectedFlow, collapsedGroups]);
 
+  // Determine appropriate layout based on graph size
+  const getLayoutConfig = useCallback((nodeCount: number, isUpdate: boolean) => {
+    // For very large graphs, use a simple grid layout (fast)
+    if (nodeCount > 1000) {
+      return {
+        name: "grid",
+        fit: true,
+        padding: 50,
+        avoidOverlap: true,
+        condense: true,
+        rows: Math.ceil(Math.sqrt(nodeCount)),
+      };
+    }
+    // For medium graphs, use cose with reduced iterations
+    return {
+      name: "cose",
+      idealEdgeLength: 100,
+      nodeOverlap: 20,
+      refresh: 20,
+      fit: true,
+      padding: 50,
+      randomize: false,
+      componentSpacing: 100,
+      nodeRepulsion: 400000,
+      edgeElasticity: 100,
+      nestingFactor: 5,
+      gravity: 80,
+      numIter: isUpdate ? 100 : 300, // Reduced iterations
+      initialTemp: 200,
+      coolingFactor: 0.95,
+      minTemp: 1.0,
+    };
+  }, []);
+
   // Initialize Cytoscape
   useEffect(() => {
     if (!containerRef.current) return;
 
+    const elements = buildElements();
+    const layoutConfig = getLayoutConfig(nodes.length, false);
+
     const cy = cytoscape({
       container: containerRef.current,
-      elements: buildElements(),
+      elements: elements,
       style: [
         // Node styles
         {
@@ -290,24 +327,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
           },
         },
       ],
-      layout: {
-        name: "cose",
-        idealEdgeLength: 100,
-        nodeOverlap: 20,
-        refresh: 20,
-        fit: true,
-        padding: 50,
-        randomize: false,
-        componentSpacing: 100,
-        nodeRepulsion: 400000,
-        edgeElasticity: 100,
-        nestingFactor: 5,
-        gravity: 80,
-        numIter: 1000,
-        initialTemp: 200,
-        coolingFactor: 0.95,
-        minTemp: 1.0,
-      },
+      layout: layoutConfig,
       minZoom: 0.1,
       maxZoom: 3,
       wheelSensitivity: 0.3,
@@ -415,33 +435,26 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
     };
   }, []); // Only run once on mount
 
-  // Update elements when data changes
+  // Track if initial mount is complete to avoid duplicate layouts
+  const isInitialMount = useRef(true);
+
+  // Update elements when data changes (but skip initial mount since init already handles it)
   useEffect(() => {
     if (!cyRef.current) return;
+
+    // Skip the first run - the init effect already set up elements and layout
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
 
     const cy = cyRef.current;
     cy.elements().remove();
     cy.add(buildElements());
     
-    cy.layout({
-      name: "cose",
-      idealEdgeLength: 100,
-      nodeOverlap: 20,
-      refresh: 20,
-      fit: true,
-      padding: 50,
-      randomize: false,
-      componentSpacing: 100,
-      nodeRepulsion: 400000,
-      edgeElasticity: 100,
-      nestingFactor: 5,
-      gravity: 80,
-      numIter: 500,
-      initialTemp: 200,
-      coolingFactor: 0.95,
-      minTemp: 1.0,
-    }).run();
-  }, [buildElements]);
+    const layoutConfig = getLayoutConfig(cy.nodes().length, true);
+    cy.layout(layoutConfig).run();
+  }, [buildElements, getLayoutConfig]);
 
   // Zoom controls
   const zoomIn = () => cyRef.current?.zoom(cyRef.current.zoom() * 1.2);

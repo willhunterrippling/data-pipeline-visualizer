@@ -42,6 +42,31 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [existingData, setExistingData] = useState<{ nodes: number; edges: number } | null>(null);
+  const [isCheckingData, setIsCheckingData] = useState(true);
+
+  // Check for existing indexed data on mount
+  useEffect(() => {
+    async function checkExistingData() {
+      try {
+        const res = await fetch("/api/graph");
+        if (res.ok) {
+          const graph = await res.json();
+          if (graph.nodes.length > 0) {
+            setExistingData({
+              nodes: graph.nodes.length,
+              edges: graph.edges.length,
+            });
+          }
+        }
+      } catch (error) {
+        console.error("Failed to check existing data:", error);
+      } finally {
+        setIsCheckingData(false);
+      }
+    }
+    checkExistingData();
+  }, []);
 
   const pollStatus = useCallback(async (id: string) => {
     try {
@@ -115,6 +140,7 @@ export default function Home() {
         setJobId(null);
         setJobStatus(null);
         setGraphStats(null);
+        setExistingData(null);
         setShowResetConfirm(false);
       } else {
         console.error("Failed to reset database");
@@ -152,7 +178,7 @@ export default function Home() {
 
       <div className="max-w-4xl mx-auto px-6 py-16">
         {/* Hero Section */}
-        {!jobId && (
+        {!jobId && !isCheckingData && (
           <div className="text-center space-y-8">
             <div className="space-y-4">
               <h2 className="text-4xl font-bold tracking-tight bg-gradient-to-r from-white via-white to-white/60 bg-clip-text text-transparent">
@@ -163,13 +189,60 @@ export default function Home() {
               </p>
             </div>
 
-            <button
-              onClick={startIndexing}
-              disabled={isLoading}
-              className="px-8 py-4 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-black font-semibold text-lg hover:from-emerald-400 hover:to-cyan-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-500/20"
-            >
-              {isLoading ? "Starting..." : "Build Graph"}
-            </button>
+            {/* Existing Data Banner */}
+            {existingData && (
+              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 max-w-lg mx-auto">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center flex-shrink-0">
+                    <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div className="text-left">
+                    <p className="text-sm text-amber-200 font-medium">Existing data found</p>
+                    <p className="text-xs text-white/50">
+                      {existingData.nodes} nodes, {existingData.edges} edges indexed
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            {existingData ? (
+              <div className="flex justify-center gap-4 flex-wrap">
+                <a
+                  href="/explorer"
+                  className="px-8 py-4 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-black font-semibold text-lg hover:from-emerald-400 hover:to-cyan-400 transition-all shadow-lg shadow-emerald-500/20"
+                >
+                  Open Explorer
+                </a>
+                <button
+                  onClick={startIndexing}
+                  disabled={isLoading}
+                  className="px-8 py-4 rounded-xl bg-white/10 hover:bg-white/20 transition-colors font-semibold text-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  {isLoading ? "Starting..." : "Refresh"}
+                </button>
+                <button
+                  onClick={() => setShowResetConfirm(true)}
+                  className="px-8 py-4 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors font-semibold text-lg border border-red-500/30"
+                >
+                  Reset
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={startIndexing}
+                disabled={isLoading}
+                className="px-8 py-4 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-black font-semibold text-lg hover:from-emerald-400 hover:to-cyan-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-emerald-500/20"
+              >
+                {isLoading ? "Starting..." : "Build Graph"}
+              </button>
+            )}
 
             <div className="grid grid-cols-3 gap-6 mt-16 text-left">
               <div className="p-6 rounded-xl bg-white/5 border border-white/10">
@@ -202,6 +275,14 @@ export default function Home() {
                 <p className="text-sm text-white/60">Automatically detect data flows like Mechanized Outreach and Bookings.</p>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Loading state while checking for existing data */}
+        {!jobId && isCheckingData && (
+          <div className="text-center py-16">
+            <div className="w-8 h-8 border-2 border-white/20 border-t-white/60 rounded-full animate-spin mx-auto" />
+            <p className="text-white/40 mt-4">Checking for existing data...</p>
           </div>
         )}
 

@@ -63,8 +63,106 @@ export interface GroupingProgressCallback {
   (progress: number, message: string): void;
 }
 
+// Chunking configuration
+const CHUNK_SIZE = 100; // Nodes per chunk
+const MAX_CHUNKS = 5;   // Limit API calls
+
 /**
- * Use AI to infer groups from node list
+ * Split nodes into chunks for parallel processing.
+ * If there are more than MAX_CHUNKS * CHUNK_SIZE nodes, sample evenly.
+ */
+function chunkNodes(nodes: GraphNode[]): GraphNode[][] {
+  const maxNodes = MAX_CHUNKS * CHUNK_SIZE;
+  
+  // If we have more nodes than we can process, sample evenly
+  let nodesToProcess: GraphNode[];
+  if (nodes.length > maxNodes) {
+    const step = Math.ceil(nodes.length / maxNodes);
+    nodesToProcess = nodes.filter((_, i) => i % step === 0).slice(0, maxNodes);
+  } else {
+    nodesToProcess = nodes;
+  }
+  
+  // Split into chunks
+  const chunks: GraphNode[][] = [];
+  for (let i = 0; i < nodesToProcess.length; i += CHUNK_SIZE) {
+    chunks.push(nodesToProcess.slice(i, i + CHUNK_SIZE));
+  }
+  
+  return chunks;
+}
+
+interface ChunkGroupResult {
+  id: string;
+  name: string;
+  description: string;
+  parentId?: string;
+  inferenceReason: string;
+  nodePatterns: string[];
+}
+
+/**
+ * Get groups from AI for a single chunk of nodes
+ */
+async function getGroupsForChunk(
+  chunkNodes: GraphNode[],
+  topPrefixes: string[],
+  topTags: string[],
+  totalNodes: number
+): Promise<ChunkGroupResult[]> {
+  const nodeNames = chunkNodes.map((n) => n.name);
+  
+  const userMessage = `Analyze these ${chunkNodes.length} data pipeline nodes (from a total of ${totalNodes}) and create logical groups.
+
+Top prefixes found across all nodes: ${topPrefixes.join(", ")}
+Top tags found across all nodes: ${topTags.join(", ")}
+
+Node names in this batch:
+${JSON.stringify(nodeNames)}
+
+Create groups that would help users navigate this data pipeline. Consider both layer-based groups (staging, intermediate, marts) and domain-based groups.`;
+
+  const result = await completeJson<GroupingResult>([
+    { role: "system", content: GROUPING_PROMPT },
+    { role: "user", content: userMessage },
+  ]);
+
+  return result.groups;
+}
+
+/**
+ * Merge groups from multiple chunks, deduplicating by ID and combining patterns
+ */
+function mergeChunkGroups(allChunkGroups: ChunkGroupResult[][]): ChunkGroupResult[] {
+  const groupMap = new Map<string, ChunkGroupResult>();
+  
+  for (const chunkGroups of allChunkGroups) {
+    for (const group of chunkGroups) {
+      const normalizedId = group.id.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      
+      if (groupMap.has(normalizedId)) {
+        // Merge patterns from duplicate group
+        const existing = groupMap.get(normalizedId)!;
+        const existingPatterns = new Set(existing.nodePatterns);
+        for (const pattern of group.nodePatterns) {
+          existingPatterns.add(pattern);
+        }
+        existing.nodePatterns = [...existingPatterns];
+      } else {
+        // Add new group with normalized ID
+        groupMap.set(normalizedId, {
+          ...group,
+          id: normalizedId,
+        });
+      }
+    }
+  }
+  
+  return [...groupMap.values()];
+}
+
+/**
+ * Use AI to infer groups from node list using chunked parallel requests
  */
 export async function inferGroups(
   nodes: GraphNode[],
@@ -72,17 +170,9 @@ export async function inferGroups(
 ): Promise<DbGroupInput[]> {
   onProgress?.(0, `Analyzing ${nodes.length} nodes for grouping patterns...`);
 
-  // Build node summary for AI
-  const nodeSummary = nodes.slice(0, 500).map((n) => ({
-    name: n.name,
-    type: n.type,
-    tags: n.metadata?.tags,
-    schema: n.metadata?.schema,
-  }));
+  onProgress?.(5, "Extracting naming patterns and tags...");
 
-  onProgress?.(10, "Extracting naming patterns and tags...");
-
-  // Get tag frequency
+  // Get tag frequency (across all nodes)
   const tagCounts = new Map<string, number>();
   for (const node of nodes) {
     for (const tag of node.metadata?.tags || []) {
@@ -94,7 +184,7 @@ export async function inferGroups(
     .slice(0, 20)
     .map(([tag, count]) => `${tag} (${count})`);
 
-  // Get prefix frequency
+  // Get prefix frequency (across all nodes)
   const prefixCounts = new Map<string, number>();
   for (const node of nodes) {
     const prefix = node.name.match(/^([a-z]+_)/)?.[1];
@@ -107,36 +197,42 @@ export async function inferGroups(
     .slice(0, 10)
     .map(([prefix, count]) => `${prefix} (${count})`);
 
-  onProgress?.(15, `Found prefixes: ${topPrefixes.slice(0, 4).map(p => p.split(' ')[0]).join(', ')}...`);
+  onProgress?.(10, `Found prefixes: ${topPrefixes.slice(0, 4).map(p => p.split(' ')[0]).join(', ')}...`);
 
-  const userMessage = `Analyze these ${nodes.length} data pipeline nodes and create logical groups.
-
-Top prefixes found: ${topPrefixes.join(", ")}
-Top tags found: ${topTags.join(", ")}
-
-Sample nodes (first 500):
-${JSON.stringify(nodeSummary, null, 2)}
-
-Create groups that would help users navigate this data pipeline. Consider both layer-based groups (staging, intermediate, marts) and domain-based groups.`;
-
-  const promptSize = (GROUPING_PROMPT.length + userMessage.length) / 1024;
-  onProgress?.(20, `Sending AI request (${promptSize.toFixed(1)}KB prompt)...`);
+  // Split nodes into chunks for parallel processing
+  const chunks = chunkNodes(nodes);
+  onProgress?.(15, `Processing ${nodes.length} nodes in ${chunks.length} chunk(s)...`);
 
   const startTime = Date.now();
 
   try {
-    onProgress?.(25, "Waiting for AI response...");
+    onProgress?.(20, `Sending ${chunks.length} parallel AI request(s)...`);
     
-    const result = await completeJson<GroupingResult>([
-      { role: "system", content: GROUPING_PROMPT },
-      { role: "user", content: userMessage },
-    ]);
+    // Process all chunks in parallel
+    const chunkResults = await Promise.all(
+      chunks.map((chunk, i) => {
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'grouping.ts:chunk',message:`Processing chunk ${i+1}/${chunks.length}`,data:{chunkIndex:i,chunkSize:chunk.length,totalChunks:chunks.length},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix'})}).catch(()=>{});
+        // #endregion
+        return getGroupsForChunk(chunk, topPrefixes, topTags, nodes.length);
+      })
+    );
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    onProgress?.(60, `AI response received in ${elapsed}s, processing ${result.groups.length} groups...`);
+    const totalGroupsBeforeMerge = chunkResults.reduce((sum, r) => sum + r.length, 0);
+    onProgress?.(50, `AI responses received in ${elapsed}s, merging ${totalGroupsBeforeMerge} groups...`);
+
+    // Merge groups from all chunks
+    const mergedGroups = mergeChunkGroups(chunkResults);
+    
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'grouping.ts:merge',message:'Groups merged',data:{chunksProcessed:chunks.length,groupsBeforeMerge:totalGroupsBeforeMerge,groupsAfterMerge:mergedGroups.length},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix'})}).catch(()=>{});
+    // #endregion
+
+    onProgress?.(60, `Merged into ${mergedGroups.length} unique groups`);
 
     // Convert to DB-ready format
-    const groups: DbGroupInput[] = result.groups.map((g) => ({
+    const groups: DbGroupInput[] = mergedGroups.map((g) => ({
       id: g.id,
       name: g.name,
       description: g.description || null,
@@ -150,7 +246,7 @@ Create groups that would help users navigate this data pipeline. Consider both l
     // Assign nodes to groups based on patterns
     let assigned = 0;
     for (const node of nodes) {
-      for (const group of result.groups) {
+      for (const group of mergedGroups) {
         for (const pattern of group.nodePatterns) {
           try {
             const regex = new RegExp(pattern, "i");

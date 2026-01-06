@@ -1,25 +1,34 @@
-import { createJob, updateJob } from "@/lib/jobs/jobStore";
+import { NextResponse } from "next/server";
+import { v4 as uuid } from "uuid";
+import { createJob, getDb } from "@/lib/db";
+import { Indexer, IndexerConfig } from "@/lib/indexer";
 
 export async function POST() {
-  const job = createJob();
+  // Initialize database
+  getDb();
 
-  // fire-and-forget background work
-  setTimeout(async () => {
-    updateJob(job.id, {
-      status: "running",
-      stage: "initializing",
-      message: "Starting repo and Snowflake analysis",
-    });
+  const jobId = uuid();
+  createJob(jobId);
 
-    // placeholder — real worker later
-    await new Promise((r) => setTimeout(r, 5000));
+  const config: IndexerConfig = {
+    dbtPath: process.env.RIPPLING_DBT_PATH || "~/Documents/GitHub/rippling-dbt",
+    airflowPath: process.env.AIRFLOW_DAGS_PATH || "~/Documents/GitHub/airflow-dags",
+    snowflakeEnabled: false, // Disabled for MVP Day 1
+  };
 
-    updateJob(job.id, {
-      status: "completed",
-      stage: "done",
-      message: "Graph built successfully",
-    });
-  }, 0);
+  // Expand ~ to home directory
+  if (config.dbtPath.startsWith("~")) {
+    config.dbtPath = config.dbtPath.replace("~", process.env.HOME || "");
+  }
+  if (config.airflowPath.startsWith("~")) {
+    config.airflowPath = config.airflowPath.replace("~", process.env.HOME || "");
+  }
 
-  return Response.json({ jobId: job.id });
+  // Start indexing in background (don't await)
+  const indexer = new Indexer(jobId, config);
+  indexer.run().catch((error) => {
+    console.error("Indexing failed:", error);
+  });
+
+  return NextResponse.json({ jobId });
 }

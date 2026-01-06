@@ -95,9 +95,13 @@ export class Indexer {
     if (stage !== this.currentStage) {
       if (this.currentStage && this.stageStartTime) {
         const elapsed = ((Date.now() - this.stageStartTime) / 1000).toFixed(1);
-        console.log(`[indexer] Stage complete: ${this.currentStage} (${elapsed}s)`);
+        const completeMsg = `Stage complete: ${this.currentStage} (${elapsed}s)`;
+        console.log(`[indexer] ${completeMsg}`);
+        appendActivityLog(this.jobId, completeMsg);
       }
-      console.log(`[indexer] Starting stage: ${stage}`);
+      const startMsg = `Starting stage: ${stage}`;
+      console.log(`[indexer] ${startMsg}`);
+      appendActivityLog(this.jobId, startMsg);
       this.currentStage = stage;
       this.stageStartTime = Date.now();
     }

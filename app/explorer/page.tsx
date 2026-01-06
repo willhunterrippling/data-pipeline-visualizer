@@ -90,6 +90,14 @@ function ExplorerContent() {
         
         if (flowId && data.flows.some((f: GraphFlow) => f.id === flowId)) {
           setSelectedFlow(flowId);
+        } else if (!flowId) {
+          // Default to "Mechanized Outreach" flow if no flow specified
+          const defaultFlow = data.flows.find((f: GraphFlow) => 
+            f.name.toLowerCase().includes("mechanized outreach")
+          );
+          if (defaultFlow) {
+            setSelectedFlow(defaultFlow.id);
+          }
         }
         
         // Focus node from URL after graph loads

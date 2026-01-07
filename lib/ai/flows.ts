@@ -145,23 +145,33 @@ export async function proposeFlows(
 
   onProgress?.(5, `Found ${anchorCandidates.length} potential anchor tables (marts/reports)...`);
 
-  // Build adjacency for traversal
+  // Build adjacency for traversal (both directions)
   const upstreamMap = new Map<string, Set<string>>();
+  const downstreamMap = new Map<string, Set<string>>();
   for (const edge of edges) {
+    // Upstream: to -> from (what feeds into a node)
     if (!upstreamMap.has(edge.to)) {
       upstreamMap.set(edge.to, new Set());
     }
     upstreamMap.get(edge.to)!.add(edge.from);
+    
+    // Downstream: from -> to (what a node feeds into)
+    if (!downstreamMap.has(edge.from)) {
+      downstreamMap.set(edge.from, new Set());
+    }
+    downstreamMap.get(edge.from)!.add(edge.to);
   }
 
   onProgress?.(10, "Building dependency graph for flow traversal...");
 
-  // Get upstream depth for each anchor
+  // Get lineage info for each anchor
   const anchorInfo = anchorCandidates.map((anchor) => {
-    const upstream = getUpstreamNodes(anchor.id, upstreamMap, 5);
+    const upstream = getUpstreamNodes(anchor.id, upstreamMap);
+    const downstream = getDownstreamNodes(anchor.id, downstreamMap);
     return {
       name: anchor.name,
       upstreamCount: upstream.size,
+      downstreamCount: downstream.size,
       upstreamSample: [...upstream].slice(0, 10),
     };
   });
@@ -247,15 +257,14 @@ Please:
 
       if (anchors.length === 0) continue;
 
-      // Use refined depth or original
-      const depth = refinement?.upstreamDepth || template.upstreamDepth;
-
-      // Get all upstream nodes for the flow
+      // Get all upstream AND downstream nodes for the flow (full lineage)
       const memberSet = new Set<string>();
       for (const anchor of anchors) {
         memberSet.add(anchor.id);
-        const upstream = getUpstreamNodes(anchor.id, upstreamMap, depth);
+        const upstream = getUpstreamNodes(anchor.id, upstreamMap);
         upstream.forEach((id) => memberSet.add(id));
+        const downstream = getDownstreamNodes(anchor.id, downstreamMap);
+        downstream.forEach((id) => memberSet.add(id));
       }
 
       // Use refined description or original
@@ -287,12 +296,14 @@ Please:
 
       if (anchors.length === 0) continue;
 
-      // Get all upstream nodes for the flow
+      // Get all upstream AND downstream nodes for the flow (full lineage)
       const memberSet = new Set<string>();
       for (const anchor of anchors) {
         memberSet.add(anchor.id);
-        const upstream = getUpstreamNodes(anchor.id, upstreamMap, 6);
+        const upstream = getUpstreamNodes(anchor.id, upstreamMap);
         upstream.forEach((id) => memberSet.add(id));
+        const downstream = getDownstreamNodes(anchor.id, downstreamMap);
+        downstream.forEach((id) => memberSet.add(id));
       }
 
       flows.push({
@@ -312,7 +323,7 @@ Please:
   } catch (error) {
     console.error("AI flow proposal failed, using fallback:", error);
     onProgress?.(50, "AI request failed, using predefined flows...");
-    return getKnownFlows(nodes, upstreamMap);
+    return getKnownFlows(nodes, upstreamMap, downstreamMap);
   }
 }
 
@@ -321,22 +332,28 @@ Please:
  */
 function getKnownFlows(
   nodes: GraphNode[],
-  upstreamMap: Map<string, Set<string>>
+  upstreamMap: Map<string, Set<string>>,
+  downstreamMap: Map<string, Set<string>>
 ): GraphFlow[] {
   const flows: GraphFlow[] = [];
+
+  // Helper to get full lineage (upstream + downstream)
+  const getFullLineage = (anchorId: string): Set<string> => {
+    const members = new Set([anchorId]);
+    getUpstreamNodes(anchorId, upstreamMap).forEach((id) => members.add(id));
+    getDownstreamNodes(anchorId, downstreamMap).forEach((id) => members.add(id));
+    return members;
+  };
 
   // Mechanized Outreach
   const moAnchor = nodes.find((n) => n.name === "mart_growth__lsw_lead_data");
   if (moAnchor) {
-    const members = new Set([moAnchor.id]);
-    getUpstreamNodes(moAnchor.id, upstreamMap, 6).forEach((id) => members.add(id));
-
     flows.push({
       id: uuid(),
       name: "Mechanized Outreach",
       description: "Lead enrichment from Apollo, ZoomInfo, Cognism to LSW Lead Data mart",
       anchorNodes: [moAnchor.id],
-      memberNodes: [...members],
+      memberNodes: [...getFullLineage(moAnchor.id)],
       userDefined: false,
       inferenceReason: "Detected mart_growth__lsw_lead_data as anchor with MECH_OUTREACH sources upstream",
     });
@@ -345,15 +362,12 @@ function getKnownFlows(
   // Bookings Pipeline
   const bookingsAnchor = nodes.find((n) => n.name === "mart_bookings__line_items_final");
   if (bookingsAnchor) {
-    const members = new Set([bookingsAnchor.id]);
-    getUpstreamNodes(bookingsAnchor.id, upstreamMap, 6).forEach((id) => members.add(id));
-
     flows.push({
       id: uuid(),
       name: "Bookings Pipeline",
       description: "Revenue/ARR calculations through 5-step transformation",
       anchorNodes: [bookingsAnchor.id],
-      memberNodes: [...members],
+      memberNodes: [...getFullLineage(bookingsAnchor.id)],
       userDefined: false,
       inferenceReason: "Detected mart_bookings__line_items_final as P1 priority hourly model",
     });
@@ -362,15 +376,12 @@ function getKnownFlows(
   // Sales Opportunities
   const salesAnchor = nodes.find((n) => n.name === "int_sales__opportunities");
   if (salesAnchor) {
-    const members = new Set([salesAnchor.id]);
-    getUpstreamNodes(salesAnchor.id, upstreamMap, 5).forEach((id) => members.add(id));
-
     flows.push({
       id: uuid(),
       name: "Sales Opportunities",
       description: "Central opportunity data with product mix, stage history, splits",
       anchorNodes: [salesAnchor.id],
-      memberNodes: [...members],
+      memberNodes: [...getFullLineage(salesAnchor.id)],
       userDefined: false,
       inferenceReason: "Detected int_sales__opportunities as central sales model",
     });
@@ -384,15 +395,12 @@ function getKnownFlows(
       n.name.toLowerCase().includes("automated_intent")
   );
   if (aiAnchor) {
-    const members = new Set([aiAnchor.id]);
-    getUpstreamNodes(aiAnchor.id, upstreamMap, 6).forEach((id) => members.add(id));
-
     flows.push({
       id: uuid(),
       name: "Automated Intent",
       description: "Intent-based lead qualification pipeline processing leads from G2, Gartner, and other intent sources",
       anchorNodes: [aiAnchor.id],
-      memberNodes: [...members],
+      memberNodes: [...getFullLineage(aiAnchor.id)],
       userDefined: false,
       inferenceReason: "Detected AUTOMATED_INTENT tables as anchor for intent-based lead qualification",
     });
@@ -406,15 +414,12 @@ function getKnownFlows(
       n.name.toLowerCase().includes("job_change")
   );
   if (jobChangeAnchor) {
-    const members = new Set([jobChangeAnchor.id]);
-    getUpstreamNodes(jobChangeAnchor.id, upstreamMap, 6).forEach((id) => members.add(id));
-
     flows.push({
       id: uuid(),
       name: "Job Change",
       description: "Employment change signals from Clay integration for prospecting triggers",
       anchorNodes: [jobChangeAnchor.id],
-      memberNodes: [...members],
+      memberNodes: [...getFullLineage(jobChangeAnchor.id)],
       userDefined: false,
       inferenceReason: "Detected job change tables as anchor for employment change signal processing",
     });
@@ -427,15 +432,12 @@ function getKnownFlows(
       n.name.toLowerCase().includes("direct_mail")
   );
   if (directMailAnchor) {
-    const members = new Set([directMailAnchor.id]);
-    getUpstreamNodes(directMailAnchor.id, upstreamMap, 6).forEach((id) => members.add(id));
-
     flows.push({
       id: uuid(),
       name: "Direct Mail",
       description: "Physical mail campaign lead enrichment for Lahlouh integration",
       anchorNodes: [directMailAnchor.id],
-      memberNodes: [...members],
+      memberNodes: [...getFullLineage(directMailAnchor.id)],
       userDefined: false,
       inferenceReason: "Detected direct mail lead enrichment table as anchor for physical mail campaigns",
     });
@@ -445,15 +447,14 @@ function getKnownFlows(
 }
 
 /**
- * Traverse upstream from a node
+ * Traverse upstream from a node (full lineage, no depth limit)
  */
 function getUpstreamNodes(
   nodeId: string,
   upstreamMap: Map<string, Set<string>>,
-  maxDepth: number,
   visited = new Set<string>()
 ): Set<string> {
-  if (maxDepth === 0 || visited.has(nodeId)) {
+  if (visited.has(nodeId)) {
     return new Set();
   }
   visited.add(nodeId);
@@ -463,7 +464,32 @@ function getUpstreamNodes(
 
   for (const upId of upstream) {
     result.add(upId);
-    const deeper = getUpstreamNodes(upId, upstreamMap, maxDepth - 1, visited);
+    const deeper = getUpstreamNodes(upId, upstreamMap, visited);
+    deeper.forEach((id) => result.add(id));
+  }
+
+  return result;
+}
+
+/**
+ * Traverse downstream from a node (full lineage, no depth limit)
+ */
+function getDownstreamNodes(
+  nodeId: string,
+  downstreamMap: Map<string, Set<string>>,
+  visited = new Set<string>()
+): Set<string> {
+  if (visited.has(nodeId)) {
+    return new Set();
+  }
+  visited.add(nodeId);
+
+  const result = new Set<string>();
+  const downstream = downstreamMap.get(nodeId) || new Set();
+
+  for (const downId of downstream) {
+    result.add(downId);
+    const deeper = getDownstreamNodes(downId, downstreamMap, visited);
     deeper.forEach((id) => result.add(id));
   }
 

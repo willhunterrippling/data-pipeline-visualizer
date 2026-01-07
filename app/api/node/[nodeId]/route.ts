@@ -23,8 +23,8 @@ export async function GET(
 
     const dbCitations = getCitationsForNode(decodedId);
     const dbExplanation = getExplanation(decodedId);
-    const dbUpstream = getUpstreamNodes(decodedId, 3);
-    const dbDownstream = getDownstreamNodes(decodedId, 3);
+    const dbUpstream = getUpstreamNodes(decodedId, 1);
+    const dbDownstream = getDownstreamNodes(decodedId, 1);
 
     const node: GraphNode = {
       id: dbNode.id,

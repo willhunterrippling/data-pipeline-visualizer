@@ -150,12 +150,16 @@ function ExplorerContent() {
   
   const graphRef = useRef<GraphExplorerRef>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const hasInitializedFlowRef = useRef(false);
   
   // State
+  // anchorId = the "origin" source node that should always be visible
+  // focusId = the current exploration focus (where we're exploring from)
   const [anchorId, setAnchorId] = useState<string | null>(null);
+  const [focusId, setFocusId] = useState<string | null>(null);
   const [flowId, setFlowId] = useState<string | null>(null);
-  const [upstreamDepth, setUpstreamDepth] = useState(3);
-  const [downstreamDepth, setDownstreamDepth] = useState(2);
+  const [upstreamDepth, setUpstreamDepth] = useState(1);
+  const [downstreamDepth, setDownstreamDepth] = useState(1);
   
   const [lineageData, setLineageData] = useState<LineageData | null>(null);
   const [flows, setFlows] = useState<GraphFlow[]>([]);
@@ -196,12 +200,34 @@ function ExplorerContent() {
         const anchor = searchParams.get("anchor");
         const flow = searchParams.get("flow");
         
+        // Determine which flow to use
+        let selectedFlow: GraphFlow | undefined;
+        
+        if (flow && data.flows.some((f: GraphFlow) => f.id === flow)) {
+          selectedFlow = data.flows.find((f: GraphFlow) => f.id === flow);
+          setFlowId(flow);
+        } else if (!hasInitializedFlowRef.current) {
+          // Default to "Mechanized Outreach" flow only on initial load
+          selectedFlow = data.flows.find((f: GraphFlow) => 
+            f.name.toLowerCase().includes("mechanized outreach")
+          );
+          if (selectedFlow) {
+            setFlowId(selectedFlow.id);
+          }
+        }
+        
+        // Set anchor: from URL, or auto-select first anchor from flow
         if (anchor) {
           setAnchorId(anchor);
+        } else if (selectedFlow && selectedFlow.anchorNodes.length > 0) {
+          // Auto-select first anchor from the flow
+          const defaultAnchor = selectedFlow.anchorNodes[0];
+          if (data.nodes.some((n: GraphNode) => n.id === defaultAnchor)) {
+            setAnchorId(defaultAnchor);
+          }
         }
-        if (flow && data.flows.some((f: GraphFlow) => f.id === flow)) {
-          setFlowId(flow);
-        }
+        
+        hasInitializedFlowRef.current = true;
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unknown error");
       } finally {
@@ -211,7 +237,7 @@ function ExplorerContent() {
     loadInitialData();
   }, [searchParams]);
 
-  // Fetch lineage when anchor/flow/depth changes
+  // Fetch lineage when anchor/focus/flow/depth changes
   useEffect(() => {
     if (!anchorId) {
       setLineageData(null);
@@ -225,6 +251,14 @@ function ExplorerContent() {
           downstreamDepth: downstreamDepth.toString(),
         });
         if (flowId) params.set("flowId", flowId);
+        // If focus is set and different from anchor, include it for stretching exploration
+        if (focusId && focusId !== anchorId) {
+          params.set("focusId", focusId);
+        }
+
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'explorer/page.tsx:fetchLineage',message:'Fetching lineage',data:{anchorId:anchorId?.slice(-40),focusId:focusId?.slice(-40),upstreamDepth,downstreamDepth,hasFocus:!!focusId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H4,H5'})}).catch(()=>{});
+        // #endregion
 
         const res = await fetch(`/api/lineage/${encodeURIComponent(anchorId!)}?${params}`);
         if (!res.ok) throw new Error("Failed to load lineage");
@@ -237,11 +271,12 @@ function ExplorerContent() {
       }
     }
     fetchLineage();
-  }, [anchorId, flowId, upstreamDepth, downstreamDepth, showToast]);
+  }, [anchorId, focusId, flowId, upstreamDepth, downstreamDepth, showToast]);
 
-  // Handle node selection from search or graph click
+  // Handle node selection from search - sets a new origin anchor
   const handleSelectAnchor = useCallback((node: GraphNode) => {
     setAnchorId(node.id);
+    setFocusId(null); // Reset focus when selecting new anchor
     updateUrl(node.id, flowId);
     
     // Also show in side panel
@@ -288,7 +323,8 @@ function ExplorerContent() {
       });
   }, [flowId, updateUrl]);
 
-  // Handle graph node click (different from anchor selection)
+  // Handle graph node click - implements stretching exploration
+  // Clicking a node in the lineage stretches the view in that direction
   const handleNodeClick = useCallback((node: GraphNode | null) => {
     if (!node) {
       setSidePanel(null);
@@ -297,6 +333,16 @@ function ExplorerContent() {
 
     // Get visibility reason if available
     const visibilityReason = lineageData?.visibilityReasons[node.id]?.description;
+    const nodeLayer = lineageData?.layers[node.id]?.layer;
+
+    // If clicking on a node in the lineage (not the anchor), stretch the view
+    if (node.id !== anchorId && lineageData?.nodes.some(n => n.id === node.id)) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'explorer/page.tsx:handleNodeClick',message:'Setting focus for stretching',data:{clickedNodeId:node.id.slice(-40),anchorId:anchorId?.slice(-40),nodeLayer:nodeLayer},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H5'})}).catch(()=>{});
+      // #endregion
+      // Set this node as the focus to stretch the exploration
+      setFocusId(node.id);
+    }
 
     setSidePanel({
       node,
@@ -319,7 +365,7 @@ function ExplorerContent() {
           isLoadingExplanation: !data.explanation,
         }));
       });
-  }, [lineageData]);
+  }, [lineageData, anchorId]);
 
   // Handle ghost node click
   const handleGhostNodeClick = useCallback((node: VisibleNode) => {
@@ -327,9 +373,10 @@ function ExplorerContent() {
     showToast(`${node.name} is outside the current flow`, "success");
   }, [showToast]);
 
-  // Clear anchor
+  // Clear anchor and focus
   const handleClearAnchor = useCallback(() => {
     setAnchorId(null);
+    setFocusId(null);
     setSidePanel(null);
     updateUrl(null, flowId);
   }, [flowId, updateUrl]);
@@ -430,7 +477,19 @@ function ExplorerContent() {
               onChange={(e) => {
                 const newFlowId = e.target.value || null;
                 setFlowId(newFlowId);
-                updateUrl(anchorId, newFlowId);
+                
+                // Auto-select first anchor from the new flow
+                const selectedFlow = newFlowId ? flows.find((f) => f.id === newFlowId) : null;
+                let newAnchorId = anchorId;
+                if (selectedFlow && selectedFlow.anchorNodes.length > 0) {
+                  const defaultAnchor = selectedFlow.anchorNodes[0];
+                  if (allNodes.some((n) => n.id === defaultAnchor)) {
+                    newAnchorId = defaultAnchor;
+                    setAnchorId(defaultAnchor);
+                  }
+                }
+                
+                updateUrl(newAnchorId, newFlowId);
               }}
               className="px-3 py-2 text-sm bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
             >

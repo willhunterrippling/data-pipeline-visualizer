@@ -161,11 +161,14 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       for (const node of nodes) {
         const colors = NODE_COLORS[node.type] || NODE_COLORS.model;
         const isAnchor = node.id === anchorId;
+        
+        // Break label at __ for multi-line display
+        const label = node.name.replace(/__/g, '\n');
 
         elements.push({
           data: {
             id: node.id,
-            label: node.name,
+            label,
             nodeType: node.type,
             subtype: node.subtype,
             relativeLayer: node.relativeLayer,
@@ -183,11 +186,14 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       // Add ghost nodes (faded, outside flow)
       for (const node of ghostNodes) {
         const colors = NODE_COLORS[node.type] || NODE_COLORS.model;
+        
+        // Break label at __ for multi-line display
+        const label = node.name.replace(/__/g, '\n');
 
         elements.push({
           data: {
             id: node.id,
-            label: node.name,
+            label,
             nodeType: node.type,
             subtype: node.subtype,
             relativeLayer: node.relativeLayer,
@@ -344,25 +350,31 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
               "border-width": 2,
               label: "data(label)",
               color: "data(text)",
-              "font-size": 11,
+              "font-size": 10,
               "text-valign": "center",
               "text-halign": "center",
-              "text-wrap": "ellipsis",
-              "text-max-width": "120px",
-              width: 140,
-              height: 45,
+              "text-wrap": "wrap",
+              "text-max-width": "140px",
+              width: 160,
+              height: 50,
               shape: "round-rectangle",
               "text-outline-color": "#0a0a0f",
               "text-outline-width": 1,
             },
           },
-          // Anchor node (selected)
+          // Anchor node (selected) - distinct with moderate glow
           {
             selector: ".anchor-node",
             style: {
               "border-width": 3,
-              "border-color": "#ffffff",
-              "background-color": LAYER_COLORS.anchor.bg,
+              "border-color": "#c084fc",
+              "background-color": "#2e1a3d",
+              color: "#e9d5ff",
+              // Moderate glow
+              "underlay-color": "#a855f7",
+              "underlay-padding": 8,
+              "underlay-opacity": 0.3,
+              "underlay-shape": "round-rectangle",
             },
           },
           // Ghost nodes (outside flow)
@@ -501,6 +513,9 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         const data = node.data();
 
         let content = `<strong>${data.label}</strong>`;
+        if (data.isAnchor) {
+          content += `<br/><span style="color: #c084fc">⚓ Anchor</span>`;
+        }
         if (data.nodeType) content += `<br/>Type: ${data.nodeType}`;
         if (data.relativeLayer !== undefined) {
           // Use smart layer name if available
@@ -638,8 +653,15 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
           </div>
           <div className="border-t border-white/10 my-2" />
           <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded border-2 border-white" style={{ backgroundColor: LAYER_COLORS.anchor.bg }} />
-            <span className="text-white/70">Selected (Anchor)</span>
+            <div 
+              className="w-3 h-3 rounded border-2" 
+              style={{ 
+                backgroundColor: "#2e1a3d", 
+                borderColor: "#c084fc",
+                boxShadow: "0 0 6px 2px rgba(168, 85, 247, 0.4)"
+              }} 
+            />
+            <span className="text-purple-300">Anchor</span>
           </div>
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded border border-dashed border-white/40 opacity-40" />

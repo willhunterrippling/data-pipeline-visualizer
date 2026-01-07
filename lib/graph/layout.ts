@@ -33,10 +33,10 @@ export interface LayoutEdge {
 const LAYOUT_CONFIG = {
   rankDir: "LR" as const,      // Left-to-right flow
   nodeSep: 60,                  // Vertical spacing between nodes
-  rankSep: 200,                 // Horizontal spacing between layers
+  rankSep: 220,                 // Horizontal spacing between layers
   marginX: 50,
   marginY: 50,
-  nodeWidth: 150,
+  nodeWidth: 160,
   nodeHeight: 50,
 };
 

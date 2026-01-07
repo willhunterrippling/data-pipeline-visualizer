@@ -17,10 +17,11 @@ import type { GraphNode, GraphEdge, GraphFlow } from "../types";
 // ============================================================================
 
 export interface VisibilityState {
-  anchor: string | null;           // Selected node ID
+  anchor: string | null;           // Origin node ID - always visible
+  focus: string | null;            // Current exploration focus (stretches view in that direction)
   flow: string | null;             // Flow ID (optional lens)
-  upstreamDepth: number;           // Hops upstream from anchor (default: 3)
-  downstreamDepth: number;         // Hops downstream from anchor (default: 2)
+  upstreamDepth: number;           // Hops upstream from focus/anchor (default: 3)
+  downstreamDepth: number;         // Hops downstream from focus/anchor (default: 2)
   showOrphans: boolean;            // Nodes with no connections (default: false)
 }
 
@@ -46,6 +47,7 @@ export interface VisibilityResult {
 
 export const DEFAULT_VISIBILITY_STATE: VisibilityState = {
   anchor: null,
+  focus: null,
   flow: null,
   upstreamDepth: 3,
   downstreamDepth: 2,
@@ -248,62 +250,251 @@ export function computeVisibility(
     };
   }
 
-  // Compute lineage from anchor
-  const lineage = computeLineage(
-    state.anchor!,
-    allNodes,
-    allEdges,
-    state.upstreamDepth,
-    state.downstreamDepth,
-    state.flow ? undefined : undefined // Don't restrict lineage traversal by flow
-  );
+  // Determine focus node (for stretching exploration)
+  const focusNode = state.focus ? nodeMap.get(state.focus) : null;
+  
+  // Build edge maps for path finding
+  const upstreamEdges = new Map<string, Set<string>>();  // to -> from[]
+  const downstreamEdges = new Map<string, Set<string>>(); // from -> to[]
+  for (const edge of allEdges) {
+    if (!upstreamEdges.has(edge.to)) upstreamEdges.set(edge.to, new Set());
+    if (!downstreamEdges.has(edge.from)) downstreamEdges.set(edge.from, new Set());
+    upstreamEdges.get(edge.to)!.add(edge.from);
+    downstreamEdges.get(edge.from)!.add(edge.to);
+  }
+
+  // Find path from anchor to focus (BFS)
+  function findPath(fromId: string, toId: string, direction: "upstream" | "downstream"): string[] | null {
+    const edgeMap = direction === "upstream" ? upstreamEdges : downstreamEdges;
+    const queue: { id: string; path: string[] }[] = [{ id: fromId, path: [fromId] }];
+    const visited = new Set<string>([fromId]);
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      if (current.id === toId) return current.path;
+
+      const neighbors = edgeMap.get(current.id) || new Set();
+      for (const neighbor of neighbors) {
+        if (visited.has(neighbor)) continue;
+        visited.add(neighbor);
+        queue.push({ id: neighbor, path: [...current.path, neighbor] });
+      }
+    }
+    return null;
+  }
+
+  // Compute base lineage from anchor (or from focus with path to anchor)
+  let lineage: Map<string, { id: string; hops: number; path: string[]; direction: "upstream" | "downstream" }>;
+  let anchorToFocusPath: string[] = [];
+  let focusDirection: "upstream" | "downstream" | null = null;
+
+  if (focusNode && state.focus !== state.anchor) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:291',message:'Stretching exploration started',data:{anchor:state.anchor,focus:state.focus,upstreamDepth:state.upstreamDepth,downstreamDepth:state.downstreamDepth},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1,H2'})}).catch(()=>{});
+    // #endregion
+    
+    // Stretching exploration: find path from anchor to focus
+    anchorToFocusPath = findPath(state.anchor!, state.focus!, "upstream") || [];
+    if (anchorToFocusPath.length > 0) {
+      focusDirection = "upstream";
+    } else {
+      anchorToFocusPath = findPath(state.anchor!, state.focus!, "downstream") || [];
+      if (anchorToFocusPath.length > 0) {
+        focusDirection = "downstream";
+      }
+    }
+
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:307',message:'Path finding result',data:{anchorToFocusPathLength:anchorToFocusPath.length,focusDirection,pathNodes:anchorToFocusPath.slice(0,5)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1,H2'})}).catch(()=>{});
+    // #endregion
+
+    if (focusDirection) {
+      // STRETCHING: Compute lineage from BOTH anchor AND focus, then merge
+      // This keeps the anchor's other connections visible while extending in the focus direction
+      
+      // 1. Compute anchor's lineage (keeps other connections visible)
+      const anchorLineage = computeLineage(
+        state.anchor!,
+        allNodes,
+        allEdges,
+        state.upstreamDepth,
+        state.downstreamDepth,
+        undefined
+      );
+      
+      // 2. Compute focus's extended lineage in the stretch direction
+      // The focus is N hops from anchor, so we extend N + upstreamDepth further
+      const focusHops = anchorToFocusPath.length - 1;
+      const extendedUpstreamDepth = focusDirection === "upstream" ? state.upstreamDepth : 0;
+      const extendedDownstreamDepth = focusDirection === "downstream" ? state.downstreamDepth : 0;
+      
+      const focusLineage = computeLineage(
+        state.focus!,
+        allNodes,
+        allEdges,
+        extendedUpstreamDepth,
+        extendedDownstreamDepth,
+        undefined
+      );
+      
+      // 3. Merge lineages - anchor lineage + focus's extended lineage
+      lineage = new Map(anchorLineage);
+      for (const [nodeId, info] of focusLineage) {
+        if (!lineage.has(nodeId)) {
+          // Adjust hops to be relative to anchor, not focus
+          const adjustedHops = focusHops + info.hops;
+          lineage.set(nodeId, {
+            ...info,
+            hops: adjustedHops,
+          });
+        }
+      }
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:merged',message:'Merged lineages',data:{anchorLineageSize:anchorLineage.size,focusLineageSize:focusLineage.size,mergedSize:lineage.size,focusHops},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H3'})}).catch(()=>{});
+      // #endregion
+    } else {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:337',message:'Focus not reachable - fallback',data:{anchor:state.anchor,focus:state.focus},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1,H2'})}).catch(()=>{});
+      // #endregion
+      
+      // Focus not reachable from anchor, fall back to anchor-only exploration
+      lineage = computeLineage(
+        state.anchor!,
+        allNodes,
+        allEdges,
+        state.upstreamDepth,
+        state.downstreamDepth,
+        undefined // Don't restrict - filter by flow after
+      );
+    }
+  } else {
+    // No focus or same as anchor - standard exploration from anchor
+    // DON'T restrict traversal - we'll filter by flow membership when building visible nodes
+    lineage = computeLineage(
+      state.anchor!,
+      allNodes,
+      allEdges,
+      state.upstreamDepth,
+      state.downstreamDepth,
+      undefined // Don't restrict - filter by flow after
+    );
+  }
 
   // Build visible nodes and ghost nodes
   const visibleNodes: VisibleNode[] = [];
   const ghostNodes: VisibleNode[] = [];
-  const anchorLayer = anchorNode.layoutLayer ?? 0;
+  const lineageNodeIds = new Set(lineage.keys());
+  const visibleNodeIds = new Set<string>();
 
-  // Add anchor node
+  // Add anchor node at layer 0
   visibleNodes.push({
     ...anchorNode,
     visibilityReason: { type: "anchor" },
     relativeLayer: 0,
   });
+  visibleNodeIds.add(state.anchor!);
 
-  // Add lineage nodes
+  // If stretching, add path from anchor to focus first
+  // All nodes in the lineage path are visible - they are "in the flow" by definition
+  if (anchorToFocusPath.length > 1 && focusDirection) {
+    for (let i = 1; i < anchorToFocusPath.length; i++) {
+      const pathNodeId = anchorToFocusPath[i];
+      if (visibleNodeIds.has(pathNodeId)) continue;
+      
+      const pathNode = nodeMap.get(pathNodeId);
+      if (!pathNode) continue;
+
+      const relativeLayer = focusDirection === "upstream" ? -i : i;
+      visibleNodes.push({
+        ...pathNode,
+        visibilityReason: {
+          type: focusDirection === "upstream" ? "upstream" : "downstream",
+          hops: i,
+          path: anchorToFocusPath.slice(0, i + 1),
+        },
+        relativeLayer,
+      });
+      visibleNodeIds.add(pathNodeId);
+    }
+  }
+
+  // Calculate the base layer offset for focus-based lineage
+  // If focus is N hops from anchor, its lineage nodes are at N + their hops
+  const focusHopsFromAnchor = anchorToFocusPath.length > 0 ? anchorToFocusPath.length - 1 : 0;
+
+  // Add lineage nodes from focus/anchor exploration
+  // All nodes in the lineage are visible - they are "in the flow" by virtue of being connected to the anchor
   for (const [nodeId, lineageInfo] of lineage) {
+    if (visibleNodeIds.has(nodeId)) continue;
+    
     const node = nodeMap.get(nodeId);
     if (!node) continue;
 
-    const isInFlow = !state.flow || candidateNodeIds.has(nodeId);
-    const nodeLayer = node.layoutLayer ?? 0;
-    const relativeLayer =
-      lineageInfo.direction === "upstream"
-        ? -lineageInfo.hops
+    // Calculate relative layer based on whether we're stretching
+    let relativeLayer: number;
+    if (focusDirection) {
+      // Stretching: layers are relative to anchor, not focus
+      if (focusDirection === "upstream") {
+        // Focus is upstream of anchor, so focus's upstream is further negative
+        relativeLayer = -(focusHopsFromAnchor + lineageInfo.hops);
+      } else {
+        // Focus is downstream of anchor
+        relativeLayer = focusHopsFromAnchor + lineageInfo.hops;
+      }
+    } else {
+      // Normal exploration from anchor
+      relativeLayer = lineageInfo.direction === "upstream" 
+        ? -lineageInfo.hops 
         : lineageInfo.hops;
+    }
 
     const visibleNode: VisibleNode = {
       ...node,
       visibilityReason:
         lineageInfo.direction === "upstream"
-          ? { type: "upstream", hops: lineageInfo.hops, path: lineageInfo.path }
-          : { type: "downstream", hops: lineageInfo.hops, path: lineageInfo.path },
+          ? { type: "upstream", hops: Math.abs(relativeLayer), path: lineageInfo.path }
+          : { type: "downstream", hops: Math.abs(relativeLayer), path: lineageInfo.path },
       relativeLayer,
     };
 
-    if (isInFlow) {
-      visibleNodes.push(visibleNode);
-    } else {
-      // Ghost node - in lineage but outside flow
-      ghostNodes.push({
-        ...visibleNode,
-        visibilityReason: {
-          type: "ghost",
-          reason: `In lineage but outside ${flowName} flow`,
-        },
-      });
+    visibleNodes.push(visibleNode);
+    visibleNodeIds.add(nodeId);
+  }
+
+  // Ghost nodes: nodes that are in the flow but NOT in the current visible set
+  // This helps show what else is in the flow beyond the current view
+  if (state.flow && flowName) {
+    for (const nodeId of candidateNodeIds) {
+      // Skip if already visible
+      if (visibleNodeIds.has(nodeId)) continue;
+      
+      const node = nodeMap.get(nodeId);
+      if (!node) continue;
+
+      // Check if this node is connected to any visible node
+      const connectedToVisible = allEdges.some(
+        (e) =>
+          (e.from === nodeId && visibleNodeIds.has(e.to)) ||
+          (e.to === nodeId && visibleNodeIds.has(e.from))
+      );
+
+      if (connectedToVisible) {
+        ghostNodes.push({
+          ...node,
+          visibilityReason: {
+            type: "ghost",
+            reason: `In ${flowName} flow but beyond current depth`,
+          },
+          relativeLayer: node.layoutLayer ?? 0,
+        });
+      }
     }
   }
+
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:final',message:'Final visible nodes',data:{visibleCount:visibleNodes.length,ghostCount:ghostNodes.length,layers:[...new Set(visibleNodes.map(n=>n.relativeLayer))].sort((a,b)=>a-b),sampleNodes:visibleNodes.slice(0,5).map(n=>({id:n.id.slice(-30),layer:n.relativeLayer}))},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H3,H4'})}).catch(()=>{});
+  // #endregion
 
   // Apply performance limits
   let finalNodes = visibleNodes;
@@ -314,10 +505,13 @@ export function computeVisibility(
       .slice(0, PERFORMANCE_LIMITS.MAX_VISIBLE_NODES);
   }
 
-  // Compute visible edges (only between visible nodes)
-  const visibleNodeIds = new Set(finalNodes.map((n) => n.id));
+  // Compute visible edges (between all lineage nodes: visible + ghost)
+  const allLineageNodeIds = new Set([
+    ...finalNodes.map((n) => n.id),
+    ...ghostNodes.map((n) => n.id),
+  ]);
   const visibleEdges = allEdges.filter(
-    (e) => visibleNodeIds.has(e.from) && visibleNodeIds.has(e.to)
+    (e) => allLineageNodeIds.has(e.from) && allLineageNodeIds.has(e.to)
   );
 
   // Compute layer range

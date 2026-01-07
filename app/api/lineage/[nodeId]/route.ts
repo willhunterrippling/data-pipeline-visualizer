@@ -16,6 +16,71 @@ import {
 } from "@/lib/graph/visibility";
 import { getRelativeLayerName, computeSmartLayerNames, type SmartLayerName } from "@/lib/graph/layout";
 import type { GraphNode, GraphEdge, GraphFlow, NodeMetadata, EdgeMetadata } from "@/lib/types";
+import type { VisibleNode } from "@/lib/graph/visibility";
+
+// Layout constants for local lineage layout (matches layout.ts)
+const LOCAL_LAYOUT_CONFIG = {
+  nodeSep: 60,      // Vertical spacing between nodes in same layer
+  rankSep: 200,     // Horizontal spacing between layers
+  marginX: 50,
+  marginY: 50,
+  nodeHeight: 50,
+};
+
+/**
+ * Compute local layout positions for lineage subset based on relativeLayer.
+ * This creates a compact layout centered around the anchor (layer 0).
+ */
+function computeLocalLayout<T extends VisibleNode>(
+  nodes: T[],
+  layerRange: { min: number; max: number }
+): T[] {
+  if (nodes.length === 0) return nodes;
+
+  // Group nodes by relativeLayer
+  const nodesByLayer = new Map<number, T[]>();
+  for (const node of nodes) {
+    const layer = node.relativeLayer;
+    if (!nodesByLayer.has(layer)) {
+      nodesByLayer.set(layer, []);
+    }
+    nodesByLayer.get(layer)!.push(node);
+  }
+
+  // Sort nodes within each layer by name for consistent ordering
+  for (const layerNodes of nodesByLayer.values()) {
+    layerNodes.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // Compute offset to shift layers so min layer starts at margin
+  // e.g., if layerRange.min = -3, we add 3 to get layer 0 at position 3
+  const layerOffset = -layerRange.min;
+
+  // Compute positions for each node
+  const positionedNodes: T[] = [];
+
+  for (const node of nodes) {
+    const layer = node.relativeLayer;
+    const layerNodes = nodesByLayer.get(layer)!;
+    const indexInLayer = layerNodes.indexOf(node);
+
+    // X position based on layer (left-to-right flow)
+    const layoutX = LOCAL_LAYOUT_CONFIG.marginX + 
+                    (layer + layerOffset) * LOCAL_LAYOUT_CONFIG.rankSep;
+
+    // Y position based on index within layer
+    const layoutY = LOCAL_LAYOUT_CONFIG.marginY + 
+                    indexInLayer * (LOCAL_LAYOUT_CONFIG.nodeHeight + LOCAL_LAYOUT_CONFIG.nodeSep);
+
+    positionedNodes.push({
+      ...node,
+      layoutX,
+      layoutY,
+    });
+  }
+
+  return positionedNodes;
+}
 
 export interface LineageResponse {
   anchor: GraphNode;
@@ -45,6 +110,7 @@ export async function GET(
   const upstreamDepth = parseInt(searchParams.get("upstreamDepth") || "3", 10);
   const downstreamDepth = parseInt(searchParams.get("downstreamDepth") || "2", 10);
   const flowId = searchParams.get("flowId") || null;
+  const focusId = searchParams.get("focusId") || null; // For stretching exploration
 
   try {
     // Verify anchor node exists
@@ -53,8 +119,9 @@ export async function GET(
       return NextResponse.json({ error: "Anchor node not found" }, { status: 404 });
     }
 
-    // Check cache first
-    const cacheKey = generateLineageCacheKey(decodedId, upstreamDepth, downstreamDepth, flowId);
+    // Include focusId in cache key
+    const cacheKey = generateLineageCacheKey(decodedId, upstreamDepth, downstreamDepth, flowId) + 
+      (focusId ? `:focus:${focusId}` : "");
     const cached = getLineageCache(cacheKey);
     
     if (cached) {
@@ -106,6 +173,7 @@ export async function GET(
     // Build visibility state
     const visibilityState: VisibilityState = {
       anchor: decodedId,
+      focus: focusId,  // For stretching exploration
       flow: flowId,
       upstreamDepth,
       downstreamDepth,
@@ -115,8 +183,13 @@ export async function GET(
     // Compute visibility
     const result = computeVisibility(visibilityState, allNodes, allEdges, flows);
 
+    // Compute local layout positions for the lineage subset
+    // This creates compact positions based on relativeLayer instead of global positions
+    const localVisibleNodes = computeLocalLayout(result.visibleNodes, result.layerRange);
+    const localGhostNodes = computeLocalLayout(result.ghostNodes, result.layerRange);
+
     // Compute smart layer names based on node prefixes
-    const allVisibleNodes = [...result.visibleNodes, ...result.ghostNodes];
+    const allVisibleNodes = [...localVisibleNodes, ...localGhostNodes];
     const smartLayerNamesMap = computeSmartLayerNames(
       allVisibleNodes.map(n => ({ id: n.id, name: n.name, relativeLayer: n.relativeLayer })),
       Math.max(Math.abs(result.layerRange.min), Math.abs(result.layerRange.max))
@@ -127,7 +200,7 @@ export async function GET(
     const visibilityReasons: Record<string, { reason: VisibilityReason; description: string }> = {};
 
     // Process visible nodes - use smart layer names
-    for (const node of result.visibleNodes) {
+    for (const node of localVisibleNodes) {
       const smartName = smartLayerNamesMap.get(node.relativeLayer);
       layers[node.id] = {
         layer: node.relativeLayer,
@@ -140,7 +213,7 @@ export async function GET(
     }
 
     // Process ghost nodes - use smart layer names
-    for (const node of result.ghostNodes) {
+    for (const node of localGhostNodes) {
       const smartName = smartLayerNamesMap.get(node.relativeLayer);
       layers[node.id] = {
         layer: node.relativeLayer,
@@ -160,9 +233,9 @@ export async function GET(
 
     const response: LineageResponse = {
       anchor: result.anchorNode!,
-      nodes: result.visibleNodes,
+      nodes: localVisibleNodes,
       edges: result.visibleEdges,
-      ghostNodes: result.ghostNodes,
+      ghostNodes: localGhostNodes,
       layers,
       smartLayerNames,
       visibilityReasons,

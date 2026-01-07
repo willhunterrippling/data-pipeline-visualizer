@@ -1,15 +1,94 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, Suspense } from "react";
+import { useEffect, useState, useCallback, useRef, Suspense, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
 import FlowSelector from "@/components/FlowSelector";
 import SearchBar from "@/components/SearchBar";
 import DepthControl from "@/components/DepthControl";
-import MiniMap from "@/components/MiniMap";
 import CreateFlowModal from "@/components/CreateFlowModal";
 import type { GraphNode, GraphEdge, GraphGroup, GraphFlow } from "@/lib/types";
 import type { GraphExplorerRef } from "@/components/GraphExplorer";
+
+// Simple markdown renderer for explanations
+function MarkdownContent({ content }: { content: string }) {
+  const rendered = useMemo(() => {
+    // Split into paragraphs
+    const paragraphs = content.split(/\n\n+/);
+    
+    return paragraphs.map((paragraph, pIdx) => {
+      // Process inline formatting
+      const processInline = (text: string): React.ReactNode[] => {
+        const parts: React.ReactNode[] = [];
+        let remaining = text;
+        let key = 0;
+        
+        // Match patterns: **bold**, *italic*, `code`, and plain text
+        const pattern = /(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`)/g;
+        let lastIndex = 0;
+        let match;
+        
+        while ((match = pattern.exec(text)) !== null) {
+          // Add plain text before match
+          if (match.index > lastIndex) {
+            parts.push(text.slice(lastIndex, match.index));
+          }
+          
+          if (match[2]) {
+            // Bold: **text**
+            parts.push(
+              <strong key={key++} className="font-semibold text-white">
+                {match[2]}
+              </strong>
+            );
+          } else if (match[3]) {
+            // Italic: *text*
+            parts.push(
+              <em key={key++} className="italic">
+                {match[3]}
+              </em>
+            );
+          } else if (match[4]) {
+            // Code: `text`
+            parts.push(
+              <code
+                key={key++}
+                className="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs text-emerald-300"
+              >
+                {match[4]}
+              </code>
+            );
+          }
+          
+          lastIndex = pattern.lastIndex;
+        }
+        
+        // Add remaining plain text
+        if (lastIndex < text.length) {
+          parts.push(text.slice(lastIndex));
+        }
+        
+        return parts.length > 0 ? parts : [text];
+      };
+      
+      // Handle line breaks within paragraph
+      const lines = paragraph.split(/\n/);
+      
+      return (
+        <p key={pIdx} className="mb-3 last:mb-0">
+          {lines.map((line, lIdx) => (
+            <span key={lIdx}>
+              {processInline(line)}
+              {lIdx < lines.length - 1 && <br />}
+            </span>
+          ))}
+        </p>
+      );
+    });
+  }, [content]);
+  
+  return <div className="text-sm text-white/80 leading-relaxed">{rendered}</div>;
+}
 
 // Dynamically import GraphExplorer to avoid SSR issues with Cytoscape
 const GraphExplorer = dynamic(() => import("@/components/GraphExplorer"), {
@@ -433,14 +512,6 @@ function ExplorerContent() {
             onNodeDoubleClick={handleNodeDoubleClick}
           />
           
-          {/* MiniMap */}
-          <div className="absolute top-4 right-4">
-            <MiniMap
-              nodeCount={nodes.length}
-              edgeCount={edges.length}
-              selectedNode={sidePanel?.node.id}
-            />
-          </div>
         </div>
 
         {/* Side Panel */}
@@ -507,10 +578,10 @@ function ExplorerContent() {
                     <div className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
                     Generating explanation...
                   </div>
+                ) : sidePanel.explanation ? (
+                  <MarkdownContent content={sidePanel.explanation} />
                 ) : (
-                  <p className="text-sm text-white/80 leading-relaxed">
-                    {sidePanel.explanation || "No explanation available."}
-                  </p>
+                  <p className="text-sm text-white/40 italic">No explanation available.</p>
                 )}
               </div>
 

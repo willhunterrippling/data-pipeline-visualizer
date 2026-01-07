@@ -10,6 +10,14 @@ export interface GraphExplorerRef {
   deselectAll: () => void;
 }
 
+export interface ViewportInfo {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  graphBounds: { x1: number; y1: number; x2: number; y2: number };
+}
+
 interface GraphExplorerProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -18,6 +26,7 @@ interface GraphExplorerProps {
   selectedFlow?: string;
   onNodeSelect?: (node: GraphNode | null) => void;
   onNodeDoubleClick?: (node: GraphNode) => void;
+  onViewportChange?: (viewport: ViewportInfo) => void;
 }
 
 // Color palette for different node types
@@ -51,6 +60,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
     selectedFlow,
     onNodeSelect,
     onNodeDoubleClick,
+    onViewportChange,
   },
   ref
 ) {
@@ -62,13 +72,15 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
   const nodesRef = useRef(nodes);
   const onNodeSelectRef = useRef(onNodeSelect);
   const onNodeDoubleClickRef = useRef(onNodeDoubleClick);
+  const onViewportChangeRef = useRef(onViewportChange);
   
   // Update refs when props change
   useEffect(() => {
     nodesRef.current = nodes;
     onNodeSelectRef.current = onNodeSelect;
     onNodeDoubleClickRef.current = onNodeDoubleClick;
-  }, [nodes, onNodeSelect, onNodeDoubleClick]);
+    onViewportChangeRef.current = onViewportChange;
+  }, [nodes, onNodeSelect, onNodeDoubleClick, onViewportChange]);
 
   // Expose methods to parent
   useImperativeHandle(ref, () => ({
@@ -482,6 +494,26 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
         tooltip.style.top = `${evt.originalEvent.offsetY + 10}px`;
       }
     });
+
+    // Viewport change handler - report current viewport for minimap
+    const reportViewport = () => {
+      if (!onViewportChangeRef.current) return;
+      const extent = cy.extent();
+      const bb = cy.elements().boundingBox();
+      onViewportChangeRef.current({
+        x: extent.x1,
+        y: extent.y1,
+        width: extent.w,
+        height: extent.h,
+        graphBounds: { x1: bb.x1, y1: bb.y1, x2: bb.x2, y2: bb.y2 },
+      });
+    };
+
+    // Subscribe to viewport events
+    cy.on("pan zoom resize", reportViewport);
+    cy.on("layoutstop", reportViewport);
+    // Initial report after layout settles
+    setTimeout(reportViewport, 100);
 
     cyRef.current = cy;
 

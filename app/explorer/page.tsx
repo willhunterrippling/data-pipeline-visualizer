@@ -49,6 +49,17 @@ function ExplorerContent() {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [canGoBack, setCanGoBack] = useState(false);
+
+  // Track if we can go back in history
+  useEffect(() => {
+    setCanGoBack(window.history.length > 1);
+  }, [sidePanel]);
+
+  // Handle go back navigation
+  const handleGoBack = useCallback(() => {
+    router.back();
+  }, [router]);
 
   // Show toast notification
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
@@ -62,7 +73,7 @@ function ExplorerContent() {
     if (flowId) params.set("flow", flowId);
     if (nodeId) params.set("node", nodeId);
     const newUrl = params.toString() ? `?${params.toString()}` : "/explorer";
-    router.replace(newUrl, { scroll: false });
+    router.push(newUrl, { scroll: false });
   }, [router]);
 
   // Handle flow selection
@@ -139,6 +150,15 @@ function ExplorerContent() {
     // Update URL
     updateUrl(selectedFlow, node.id);
 
+    // Show loading state IMMEDIATELY so user sees feedback
+    setSidePanel({
+      node: node,
+      explanation: undefined,
+      upstream: [],
+      downstream: [],
+      isLoadingExplanation: true,
+    });
+
     // Fetch node details
     try {
       const res = await fetch(`/api/node/${encodeURIComponent(node.id)}`);
@@ -176,10 +196,10 @@ function ExplorerContent() {
   }, [selectedFlow, updateUrl]);
 
   // Handle node double-click (column lineage)
-  const handleNodeDoubleClick = useCallback((node: GraphNode) => {
-    // TODO: Open column lineage modal
-    showToast(`Double-clicked: ${node.name}`);
-  }, [showToast]);
+  const handleNodeDoubleClick = useCallback((_node: GraphNode) => {
+    // TODO: Open column lineage modal in the future
+    // For now, the single-click side panel provides the detail view
+  }, []);
 
   // Handle search selection - focus on node in graph
   const handleSearchSelect = useCallback((node: GraphNode) => {
@@ -213,12 +233,49 @@ function ExplorerContent() {
         case "F":
           graphRef.current?.fitToScreen();
           break;
+        case "[":
+          if (window.history.length > 1) {
+            router.back();
+          }
+          break;
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedFlow, updateUrl]);
+  }, [selectedFlow, updateUrl, router]);
+
+  // Handle browser back/forward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      const params = new URLSearchParams(window.location.search);
+      const nodeId = params.get("node");
+      if (nodeId) {
+        const node = nodes.find(n => n.id === nodeId);
+        if (node) {
+          // Directly set side panel without triggering URL update
+          fetch(`/api/node/${encodeURIComponent(node.id)}`)
+            .then(res => res.json())
+            .then(data => {
+              setSidePanel({
+                node: data.node,
+                explanation: data.explanation,
+                upstream: data.upstream,
+                downstream: data.downstream,
+                isLoadingExplanation: !data.explanation,
+              });
+            });
+          graphRef.current?.focusNode(nodeId);
+        }
+      } else {
+        setSidePanel(null);
+        graphRef.current?.deselectAll();
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [nodes]);
 
   // Re-index handler
   const handleReindex = useCallback(async () => {
@@ -303,6 +360,18 @@ function ExplorerContent() {
             </a>
             
             <div className="h-6 w-px bg-white/20" />
+
+            {canGoBack && (
+              <button
+                onClick={handleGoBack}
+                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                title="Go back ([)"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+              </button>
+            )}
             
             <FlowSelector
               flows={flows}
@@ -351,8 +420,8 @@ function ExplorerContent() {
 
       {/* Main content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Graph */}
-        <div className="flex-1 relative">
+        {/* Graph - min-w-0 allows flex item to shrink below content size */}
+        <div className="flex-1 min-w-0 relative overflow-hidden">
           <GraphExplorer
             ref={graphRef}
             nodes={nodes}

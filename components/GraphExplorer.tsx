@@ -7,6 +7,7 @@ import type { GraphNode, GraphEdge, GraphGroup, GraphFlow } from "@/lib/types";
 export interface GraphExplorerRef {
   focusNode: (nodeId: string) => void;
   fitToScreen: () => void;
+  deselectAll: () => void;
 }
 
 interface GraphExplorerProps {
@@ -29,12 +30,16 @@ const NODE_COLORS: Record<string, { bg: string; border: string; text: string }> 
   external: { bg: "#5f3b1e", border: "#f59e0b", text: "#fcd34d" },
 };
 
+// Distinct colors for groups - used for both node borders and group boundaries
 const GROUP_COLORS = [
-  { bg: "#1a1a2e", border: "#4a4a6a" },
-  { bg: "#1e2a1e", border: "#4a6a4a" },
-  { bg: "#2e1a1a", border: "#6a4a4a" },
-  { bg: "#1a2e2e", border: "#4a6a6a" },
-  { bg: "#2e2e1a", border: "#6a6a4a" },
+  { bg: "#1a1a2e", border: "#818cf8", name: "indigo" },   // Indigo
+  { bg: "#1e2a1e", border: "#34d399", name: "emerald" },  // Emerald
+  { bg: "#2e1a1a", border: "#f472b6", name: "pink" },     // Pink
+  { bg: "#1a2e2e", border: "#22d3ee", name: "cyan" },     // Cyan
+  { bg: "#2e2e1a", border: "#fbbf24", name: "amber" },    // Amber
+  { bg: "#2a1a2e", border: "#a78bfa", name: "violet" },   // Violet
+  { bg: "#1a2e1a", border: "#4ade80", name: "green" },    // Green
+  { bg: "#2e1a2a", border: "#fb7185", name: "rose" },     // Rose
 ];
 
 const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function GraphExplorer(
@@ -83,6 +88,11 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
     fitToScreen: () => {
       cyRef.current?.fit(undefined, 50);
     },
+    deselectAll: () => {
+      if (!cyRef.current) return;
+      cyRef.current.elements().unselect();
+      cyRef.current.elements().removeClass("highlighted dimmed");
+    },
   }));
 
   // Initialize collapsed groups from defaults
@@ -113,25 +123,34 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
       }
     }
 
-    // Create group nodes (compound parents)
+    // Build group color map first
     groups.forEach((group, index) => {
       const color = GROUP_COLORS[index % GROUP_COLORS.length];
       groupColorMap.set(group.id, color);
+    });
 
+    // Create group nodes (compound parents) - both collapsed and expanded
+    groups.forEach((group) => {
+      const color = groupColorMap.get(group.id)!;
       const groupNodes = filteredNodes.filter((n) => n.groupId === group.id);
       if (groupNodes.length === 0) return;
 
+      const groupLabel = `${group.name} (${groupNodes.length})`;
+      const isCollapsed = collapsedGroups.has(group.id);
+      
       elements.push({
         data: {
           id: `group_${group.id}`,
-          label: `${group.name} (${groupNodes.length})`,
+          label: groupLabel,
           isGroup: true,
           groupId: group.id,
           nodeCount: groupNodes.length,
-          collapsed: collapsedGroups.has(group.id),
+          collapsed: isCollapsed,
           description: group.description,
+          bg: color.bg,
+          border: color.border,
         },
-        classes: "group-node",
+        classes: isCollapsed ? "group-node group-collapsed" : "group-node group-expanded",
       });
     });
 
@@ -142,16 +161,20 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
 
       if (isInCollapsedGroup) continue; // Don't show nodes in collapsed groups
 
+      // Assign parent for expanded groups so layout keeps them together
+      const hasExpandedGroup = node.groupId && !collapsedGroups.has(node.groupId);
+      
       elements.push({
         data: {
           id: node.id,
           label: node.name,
-          parent: node.groupId ? `group_${node.groupId}` : undefined,
+          parent: hasExpandedGroup ? `group_${node.groupId}` : undefined,
           nodeType: node.type,
           subtype: node.subtype,
           repo: node.repo,
           description: node.metadata?.description,
           schema: node.metadata?.schema,
+          groupId: node.groupId,
           ...colors,
         },
         classes: `node-${node.type}`,
@@ -252,35 +275,56 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
             "text-outline-width": 1,
           },
         },
-        // Group (compound) node styles
+        // Collapsed group node styles - compact clickable box
         {
-          selector: ".group-node",
+          selector: ".group-collapsed",
           style: {
-            "background-color": "#12121a",
-            "background-opacity": 0.8,
-            "border-color": "#3f3f5f",
+            "background-color": "data(bg)",
+            "background-opacity": 0.9,
+            "border-color": "data(border)",
+            "border-width": 2,
+            "border-style": "solid",
+            label: "data(label)",
+            color: "#e5e7eb",
+            "font-size": 13,
+            "font-weight": "bold",
+            "text-valign": "center",
+            "text-halign": "center",
+            width: 160,
+            height: 50,
+            shape: "round-rectangle",
+            "text-wrap": "wrap",
+            "text-max-width": "140px",
+          },
+        },
+        // Expanded group node styles - lightweight dashed boundary, draggable
+        {
+          selector: ".group-expanded",
+          style: {
+            "background-color": "data(bg)",
+            "background-opacity": 0.1,
+            "border-color": "data(border)",
             "border-width": 2,
             "border-style": "dashed",
             label: "data(label)",
-            color: "#9ca3af",
-            "font-size": 14,
+            color: "data(border)",
+            "font-size": 12,
             "font-weight": "bold",
             "text-valign": "top",
             "text-halign": "center",
-            "text-margin-y": 10,
-            padding: "30px",
+            "text-margin-y": 8,
+            padding: "20px",
+            shape: "round-rectangle",
+            "text-wrap": "wrap",
+            "text-max-width": "200px",
           },
         },
-        // Collapsed group styles
+        // Make expanded groups grabbable (cursor hint)
         {
-          selector: ".group-node[collapsed]",
+          selector: ".group-expanded:active",
           style: {
-            width: 150,
-            height: 60,
-            "background-color": "#1a1a2e",
-            "background-opacity": 1,
-            "border-style": "solid",
-            "text-valign": "center",
+            "overlay-opacity": 0.1,
+            "overlay-color": "#ffffff",
           },
         },
         // Edge styles
@@ -377,17 +421,15 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
       neighborhood.removeClass("dimmed").addClass("highlighted");
     });
 
-    cy.on("tap", ".group-node", (evt) => {
+    // Only expand collapsed groups on click - expanded groups can be dragged
+    // Use the context bar pills to collapse expanded groups
+    cy.on("tap", ".group-collapsed", (evt) => {
       const groupNode = evt.target as NodeSingular;
       const groupId = groupNode.data("groupId");
       
       setCollapsedGroups((prev) => {
         const next = new Set(prev);
-        if (next.has(groupId)) {
-          next.delete(groupId);
-        } else {
-          next.add(groupId);
-        }
+        next.delete(groupId); // Expand the group
         return next;
       });
     });
@@ -475,9 +517,51 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
   const zoomOut = () => cyRef.current?.zoom(cyRef.current.zoom() / 1.2);
   const fitToScreen = () => cyRef.current?.fit(undefined, 50);
 
+  // Get expanded groups (groups that exist and are NOT in collapsedGroups)
+  const expandedGroups = groups.filter((g) => !collapsedGroups.has(g.id));
+
+  // Collapse a group (add to collapsedGroups set)
+  const collapseGroup = (groupId: string) => {
+    setCollapsedGroups((prev) => new Set([...prev, groupId]));
+  };
+
   return (
     <div className="relative w-full h-full">
       <div ref={containerRef} className="w-full h-full bg-[#0a0a0f]" />
+      
+      {/* Expanded Groups Context Bar - compact pills only */}
+      {expandedGroups.length > 0 && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 flex flex-wrap items-center justify-center gap-2 max-w-[90%]">
+          {expandedGroups.map((group, index) => {
+            const nodeCount = nodes.filter((n) => n.groupId === group.id).length;
+            const color = GROUP_COLORS[index % GROUP_COLORS.length];
+            return (
+              <button
+                key={group.id}
+                onClick={() => collapseGroup(group.id)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-black/70 backdrop-blur-sm hover:bg-black/80 rounded-md text-xs transition-all group border"
+                style={{ borderColor: `${color.border}80` }}
+                title={`Click to collapse ${group.name}`}
+              >
+                <div 
+                  className="w-2 h-2 rounded-full" 
+                  style={{ backgroundColor: color.border }}
+                />
+                <span className="text-white/90 font-medium">{group.name}</span>
+                <span className="text-white/50">({nodeCount})</span>
+                <svg 
+                  className="w-3 h-3 text-white/30 group-hover:text-white/70 transition-colors" 
+                  fill="none" 
+                  viewBox="0 0 24 24" 
+                  stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            );
+          })}
+        </div>
+      )}
       
       {/* Zoom Controls */}
       <div className="absolute bottom-4 right-4 flex flex-col gap-2">
@@ -529,15 +613,27 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function 
           <span className="text-white/70">External</span>
         </div>
         <div className="border-t border-white/10 my-2" />
+        <div className="flex items-center gap-2">
+          <div 
+            className="w-4 h-3 rounded-sm" 
+            style={{ 
+              backgroundColor: "#12121a", 
+              border: "1.5px dashed #3f3f5f" 
+            }} 
+          />
+          <span className="text-white/70">Group (related nodes)</span>
+        </div>
+        <div className="border-t border-white/10 my-2" />
         <div className="text-white/40">Click group to expand/collapse</div>
         <div className="text-white/40">Double-click node for details</div>
       </div>
 
       {/* Keyboard shortcuts hint */}
-      <div className="absolute top-4 left-4 text-xs text-white/30">
+      <div className="absolute bottom-4 left-52 text-xs text-white/30">
         Press <kbd className="px-1.5 py-0.5 bg-white/10 rounded">Esc</kbd> to deselect · 
         <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">/</kbd> to search · 
-        <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">F</kbd> to fit
+        <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">F</kbd> to fit · 
+        <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">[</kbd> to go back
       </div>
     </div>
   );

@@ -1,32 +1,40 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useImperativeHandle,
+  forwardRef,
+} from "react";
 import cytoscape, { Core, NodeSingular } from "cytoscape";
-import type { GraphNode, GraphEdge, GraphGroup, GraphFlow } from "@/lib/types";
+import type { GraphNode, GraphEdge } from "@/lib/types";
+import type { VisibilityReason } from "@/lib/graph/visibility";
+import type { SmartLayerName } from "@/lib/graph/layout";
 
 export interface GraphExplorerRef {
   focusNode: (nodeId: string) => void;
   fitToScreen: () => void;
   deselectAll: () => void;
+  centerOnAnchor: () => void;
 }
 
-export interface ViewportInfo {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  graphBounds: { x1: number; y1: number; x2: number; y2: number };
+export interface VisibleNode extends GraphNode {
+  visibilityReason: VisibilityReason;
+  relativeLayer: number;
 }
 
 interface GraphExplorerProps {
-  nodes: GraphNode[];
+  nodes: VisibleNode[];
   edges: GraphEdge[];
-  groups: GraphGroup[];
-  flows: GraphFlow[];
-  selectedFlow?: string;
+  ghostNodes?: VisibleNode[];
+  anchorId?: string | null;
+  layerRange: { min: number; max: number };
+  smartLayerNames?: Record<number, SmartLayerName>;  // Smart layer names from API
   onNodeSelect?: (node: GraphNode | null) => void;
   onNodeDoubleClick?: (node: GraphNode) => void;
-  onViewportChange?: (viewport: ViewportInfo) => void;
+  onGhostNodeClick?: (node: VisibleNode) => void;
 }
 
 // Color palette for different node types
@@ -39,636 +47,615 @@ const NODE_COLORS: Record<string, { bg: string; border: string; text: string }> 
   external: { bg: "#5f3b1e", border: "#f59e0b", text: "#fcd34d" },
 };
 
-// Distinct colors for groups - used for both node borders and group boundaries
-const GROUP_COLORS = [
-  { bg: "#1a1a2e", border: "#818cf8", name: "indigo" },   // Indigo
-  { bg: "#1e2a1e", border: "#34d399", name: "emerald" },  // Emerald
-  { bg: "#2e1a1a", border: "#f472b6", name: "pink" },     // Pink
-  { bg: "#1a2e2e", border: "#22d3ee", name: "cyan" },     // Cyan
-  { bg: "#2e2e1a", border: "#fbbf24", name: "amber" },    // Amber
-  { bg: "#2a1a2e", border: "#a78bfa", name: "violet" },   // Violet
-  { bg: "#1a2e1a", border: "#4ade80", name: "green" },    // Green
-  { bg: "#2e1a2a", border: "#fb7185", name: "rose" },     // Rose
-];
+// Semantic colors based on layer position
+const LAYER_COLORS: Record<string, { bg: string; border: string }> = {
+  source: { bg: "#1e3a5f", border: "#3b82f6" },      // Blue - sources
+  staging: { bg: "#1a2e2e", border: "#22d3ee" },     // Cyan - staging
+  intermediate: { bg: "#1e4035", border: "#10b981" }, // Green - intermediate
+  anchor: { bg: "#2e1a2a", border: "#a78bfa" },      // Purple - selected
+  downstream: { bg: "#2e2e1a", border: "#fbbf24" },  // Amber - consumers
+};
 
-const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(function GraphExplorer(
-  {
-    nodes,
-    edges,
-    groups,
-    flows,
-    selectedFlow,
-    onNodeSelect,
-    onNodeDoubleClick,
-    onViewportChange,
-  },
-  ref
-) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const cyRef = useRef<Core | null>(null);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  
-  // Keep refs for stable access in event handlers (avoid stale closures)
-  const nodesRef = useRef(nodes);
-  const onNodeSelectRef = useRef(onNodeSelect);
-  const onNodeDoubleClickRef = useRef(onNodeDoubleClick);
-  const onViewportChangeRef = useRef(onViewportChange);
-  
-  // Update refs when props change
-  useEffect(() => {
-    nodesRef.current = nodes;
-    onNodeSelectRef.current = onNodeSelect;
-    onNodeDoubleClickRef.current = onNodeDoubleClick;
-    onViewportChangeRef.current = onViewportChange;
-  }, [nodes, onNodeSelect, onNodeDoubleClick, onViewportChange]);
+// Swimlane configuration
+const SWIMLANE_CONFIG = {
+  padding: 40,
+  headerHeight: 30,
+  minWidth: 180,
+  backgroundColor: "rgba(255, 255, 255, 0.03)",
+  borderColor: "rgba(255, 255, 255, 0.1)",
+  textColor: "rgba(255, 255, 255, 0.6)",
+};
 
-  // Expose methods to parent
-  useImperativeHandle(ref, () => ({
-    focusNode: (nodeId: string) => {
-      if (!cyRef.current) return;
-      const node = cyRef.current.getElementById(nodeId);
-      if (node.length > 0) {
-        cyRef.current.animate({
-          center: { eles: node },
-          zoom: 1.5,
-        }, {
-          duration: 500,
+// Performance configuration
+const PERFORMANCE_CONFIG = {
+  viewportBuffer: 200,      // Pixels outside viewport to pre-render
+  maxEdgesPerNode: 50,      // Skip hyper-connected nodes
+  edgeBundlingThreshold: 10, // Bundle when >N edges converge
+};
+
+function getLayerName(relativeLayer: number): string {
+  if (relativeLayer === 0) return "Selected";
+  if (relativeLayer < -2) return "Sources";
+  if (relativeLayer === -2) return "Staging";
+  if (relativeLayer === -1) return "Intermediate";
+  if (relativeLayer === 1) return "Consumers";
+  return "Downstream";
+}
+
+const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
+  function GraphExplorer(
+    {
+      nodes,
+      edges,
+      ghostNodes = [],
+      anchorId,
+      layerRange,
+      smartLayerNames,
+      onNodeSelect,
+      onNodeDoubleClick,
+      onGhostNodeClick,
+    },
+    ref
+  ) {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const cyRef = useRef<Core | null>(null);
+    const swimlaneCanvasRef = useRef<HTMLCanvasElement>(null);
+
+    // Keep refs for stable access in event handlers
+    const nodesRef = useRef(nodes);
+    const ghostNodesRef = useRef(ghostNodes);
+    const smartLayerNamesRef = useRef(smartLayerNames);
+    const onNodeSelectRef = useRef(onNodeSelect);
+    const onNodeDoubleClickRef = useRef(onNodeDoubleClick);
+    const onGhostNodeClickRef = useRef(onGhostNodeClick);
+
+    useEffect(() => {
+      nodesRef.current = nodes;
+      ghostNodesRef.current = ghostNodes;
+      smartLayerNamesRef.current = smartLayerNames;
+      onNodeSelectRef.current = onNodeSelect;
+      onNodeDoubleClickRef.current = onNodeDoubleClick;
+      onGhostNodeClickRef.current = onGhostNodeClick;
+    }, [nodes, ghostNodes, smartLayerNames, onNodeSelect, onNodeDoubleClick, onGhostNodeClick]);
+
+    // Expose methods to parent
+    useImperativeHandle(ref, () => ({
+      focusNode: (nodeId: string) => {
+        if (!cyRef.current) return;
+        const cy = cyRef.current;
+        const node = cy.getElementById(nodeId);
+        if (node.length > 0) {
+          cy.animate(
+            { center: { eles: node }, zoom: 1.5 },
+            { duration: 400 }
+          );
+          node.select();
+        }
+      },
+      fitToScreen: () => {
+        cyRef.current?.fit(undefined, 50);
+      },
+      deselectAll: () => {
+        if (!cyRef.current) return;
+        cyRef.current.elements().unselect();
+        cyRef.current.elements().removeClass("highlighted dimmed");
+      },
+      centerOnAnchor: () => {
+        if (!cyRef.current || !anchorId) return;
+        const cy = cyRef.current;
+        const anchor = cy.getElementById(anchorId);
+        if (anchor.length > 0) {
+          cy.animate(
+            { center: { eles: anchor }, zoom: 1.2 },
+            { duration: 400 }
+          );
+        }
+      },
+    }));
+
+    // Build Cytoscape elements using pre-computed positions
+    const buildElements = useCallback(() => {
+      const elements: cytoscape.ElementDefinition[] = [];
+
+      // Add visible nodes with pre-computed positions
+      for (const node of nodes) {
+        const colors = NODE_COLORS[node.type] || NODE_COLORS.model;
+        const isAnchor = node.id === anchorId;
+
+        elements.push({
+          data: {
+            id: node.id,
+            label: node.name,
+            nodeType: node.type,
+            subtype: node.subtype,
+            relativeLayer: node.relativeLayer,
+            isAnchor,
+            ...colors,
+          },
+          position: {
+            x: node.layoutX ?? 0,
+            y: node.layoutY ?? 0,
+          },
+          classes: `node-${node.type}${isAnchor ? " anchor-node" : ""}`,
         });
-        node.select();
       }
-    },
-    fitToScreen: () => {
-      cyRef.current?.fit(undefined, 50);
-    },
-    deselectAll: () => {
-      if (!cyRef.current) return;
-      cyRef.current.elements().unselect();
-      cyRef.current.elements().removeClass("highlighted dimmed");
-    },
-  }));
 
-  // Initialize collapsed groups from defaults
-  useEffect(() => {
-    const defaultCollapsed = new Set(
-      groups.filter((g) => g.collapsedDefault).map((g) => g.id)
-    );
-    setCollapsedGroups(defaultCollapsed);
-  }, [groups]);
+      // Add ghost nodes (faded, outside flow)
+      for (const node of ghostNodes) {
+        const colors = NODE_COLORS[node.type] || NODE_COLORS.model;
 
-  // Build Cytoscape elements
-  const buildElements = useCallback(() => {
-    const elements: cytoscape.ElementDefinition[] = [];
-    const groupColorMap = new Map<string, typeof GROUP_COLORS[0]>();
+        elements.push({
+          data: {
+            id: node.id,
+            label: node.name,
+            nodeType: node.type,
+            subtype: node.subtype,
+            relativeLayer: node.relativeLayer,
+            isGhost: true,
+            ...colors,
+          },
+          position: {
+            x: node.layoutX ?? 0,
+            y: node.layoutY ?? 0,
+          },
+          classes: "node-ghost",
+        });
+      }
 
-    // Filter nodes/edges by flow if selected
-    let filteredNodes = nodes;
-    let filteredEdges = edges;
-    
-    if (selectedFlow) {
-      const flow = flows.find((f) => f.id === selectedFlow);
-      if (flow) {
-        const memberSet = new Set(flow.memberNodes);
-        filteredNodes = nodes.filter((n) => memberSet.has(n.id));
-        filteredEdges = edges.filter(
-          (e) => memberSet.has(e.from) && memberSet.has(e.to)
+      // Add edges
+      const allNodeIds = new Set([
+        ...nodes.map((n) => n.id),
+        ...ghostNodes.map((n) => n.id),
+      ]);
+
+      for (const edge of edges) {
+        if (allNodeIds.has(edge.from) && allNodeIds.has(edge.to)) {
+          elements.push({
+            data: {
+              id: edge.id,
+              source: edge.from,
+              target: edge.to,
+              edgeType: edge.type,
+            },
+            classes: `edge-${edge.type}`,
+          });
+        }
+      }
+
+      return elements;
+    }, [nodes, edges, ghostNodes, anchorId]);
+
+    // Draw swimlane backgrounds
+    const drawSwimlanes = useCallback(() => {
+      const canvas = swimlaneCanvasRef.current;
+      const cy = cyRef.current;
+      if (!canvas || !cy) return;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      // Match canvas size to container
+      const rect = canvas.parentElement?.getBoundingClientRect();
+      if (!rect) return;
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+
+      // Clear canvas
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // Group nodes by layer
+      const layerNodes = new Map<number, NodeSingular[]>();
+      cy.nodes().forEach((node) => {
+        const layer = node.data("relativeLayer") as number;
+        if (layer !== undefined) {
+          if (!layerNodes.has(layer)) layerNodes.set(layer, []);
+          layerNodes.get(layer)!.push(node);
+        }
+      });
+
+      if (layerNodes.size === 0) return;
+
+      // Get viewport transform
+      const pan = cy.pan();
+      const zoom = cy.zoom();
+
+      // Draw each layer's swimlane
+      const sortedLayers = [...layerNodes.keys()].sort((a, b) => a - b);
+
+      for (const layer of sortedLayers) {
+        const nodesInLayer = layerNodes.get(layer)!;
+        if (nodesInLayer.length === 0) continue;
+
+        // Calculate bounding box for this layer
+        let minX = Infinity,
+          maxX = -Infinity;
+        let minY = Infinity,
+          maxY = -Infinity;
+
+        for (const node of nodesInLayer) {
+          const pos = node.position();
+          const width = node.width();
+          const height = node.height();
+          minX = Math.min(minX, pos.x - width / 2);
+          maxX = Math.max(maxX, pos.x + width / 2);
+          minY = Math.min(minY, pos.y - height / 2);
+          maxY = Math.max(maxY, pos.y + height / 2);
+        }
+
+        // Add padding
+        const padding = SWIMLANE_CONFIG.padding;
+        minX -= padding;
+        maxX += padding;
+        minY -= padding + SWIMLANE_CONFIG.headerHeight;
+        maxY += padding;
+
+        // Transform to screen coordinates
+        const screenMinX = minX * zoom + pan.x;
+        const screenMaxX = maxX * zoom + pan.x;
+        const screenMinY = minY * zoom + pan.y;
+        const screenMaxY = maxY * zoom + pan.y;
+
+        const width = Math.max(screenMaxX - screenMinX, SWIMLANE_CONFIG.minWidth * zoom);
+        const height = screenMaxY - screenMinY;
+
+        // Draw background
+        ctx.fillStyle = SWIMLANE_CONFIG.backgroundColor;
+        ctx.fillRect(screenMinX, screenMinY, width, height);
+
+        // Draw border
+        ctx.strokeStyle = SWIMLANE_CONFIG.borderColor;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(screenMinX, screenMinY, width, height);
+
+        // Draw header
+        const headerY = screenMinY + SWIMLANE_CONFIG.headerHeight * zoom * 0.7;
+        ctx.fillStyle = SWIMLANE_CONFIG.textColor;
+        ctx.font = `${12 * zoom}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        
+        // Use smart layer name if available, otherwise fall back to generic
+        const smartName = smartLayerNamesRef.current?.[layer];
+        const layerLabel = smartName?.name || getLayerName(layer);
+        
+        ctx.fillText(
+          `${layerLabel} (${nodesInLayer.length})`,
+          screenMinX + width / 2,
+          headerY
         );
       }
-    }
+    }, []);
 
-    // Build group color map first
-    groups.forEach((group, index) => {
-      const color = GROUP_COLORS[index % GROUP_COLORS.length];
-      groupColorMap.set(group.id, color);
-    });
+    // Initialize Cytoscape
+    useEffect(() => {
+      if (!containerRef.current) return;
 
-    // Create group nodes (compound parents) - both collapsed and expanded
-    groups.forEach((group) => {
-      const color = groupColorMap.get(group.id)!;
-      const groupNodes = filteredNodes.filter((n) => n.groupId === group.id);
-      if (groupNodes.length === 0) return;
+      const elements = buildElements();
 
-      const groupLabel = `${group.name} (${groupNodes.length})`;
-      const isCollapsed = collapsedGroups.has(group.id);
-      
-      elements.push({
-        data: {
-          id: `group_${group.id}`,
-          label: groupLabel,
-          isGroup: true,
-          groupId: group.id,
-          nodeCount: groupNodes.length,
-          collapsed: isCollapsed,
-          description: group.description,
-          bg: color.bg,
-          border: color.border,
-        },
-        classes: isCollapsed ? "group-node group-collapsed" : "group-node group-expanded",
+      const cy = cytoscape({
+        container: containerRef.current,
+        elements,
+        style: [
+          // Node styles - using pre-computed positions, no layout needed
+          {
+            selector: "node",
+            style: {
+              "background-color": "data(bg)",
+              "border-color": "data(border)",
+              "border-width": 2,
+              label: "data(label)",
+              color: "data(text)",
+              "font-size": 11,
+              "text-valign": "center",
+              "text-halign": "center",
+              "text-wrap": "ellipsis",
+              "text-max-width": "120px",
+              width: 140,
+              height: 45,
+              shape: "round-rectangle",
+              "text-outline-color": "#0a0a0f",
+              "text-outline-width": 1,
+            },
+          },
+          // Anchor node (selected)
+          {
+            selector: ".anchor-node",
+            style: {
+              "border-width": 3,
+              "border-color": "#ffffff",
+              "background-color": LAYER_COLORS.anchor.bg,
+            },
+          },
+          // Ghost nodes (outside flow)
+          {
+            selector: ".node-ghost",
+            style: {
+              opacity: 0.3,
+              "border-style": "dashed",
+            },
+          },
+          // Edge styles
+          {
+            selector: "edge",
+            style: {
+              width: 1.5,
+              "line-color": "#4b5563",
+              "target-arrow-color": "#4b5563",
+              "target-arrow-shape": "triangle",
+              "curve-style": "bezier",
+              opacity: 0.6,
+            },
+          },
+          {
+            selector: "edge.edge-ref, edge.edge-source",
+            style: {
+              "line-color": "#10b981",
+              "target-arrow-color": "#10b981",
+              width: 2,
+            },
+          },
+          {
+            selector: "edge.edge-sql_dependency",
+            style: {
+              "line-color": "#6366f1",
+              "target-arrow-color": "#6366f1",
+            },
+          },
+          {
+            selector: "edge.edge-dag_edge",
+            style: {
+              "line-color": "#f59e0b",
+              "target-arrow-color": "#f59e0b",
+              "line-style": "dashed",
+            },
+          },
+          // Selected node
+          {
+            selector: "node:selected",
+            style: {
+              "border-width": 3,
+              "border-color": "#ffffff",
+            },
+          },
+          // Highlighted nodes
+          {
+            selector: ".highlighted",
+            style: {
+              opacity: 1,
+            },
+          },
+          {
+            selector: ".dimmed",
+            style: {
+              opacity: 0.25,
+            },
+          },
+        ],
+        // Use preset layout since positions are pre-computed
+        layout: { name: "preset" },
+        minZoom: 0.1,
+        maxZoom: 3,
+        wheelSensitivity: 0.3,
       });
-    });
 
-    // Create node elements
-    for (const node of filteredNodes) {
-      const colors = NODE_COLORS[node.type] || NODE_COLORS.model;
-      const isInCollapsedGroup = node.groupId && collapsedGroups.has(node.groupId);
+      // Tooltip element
+      const tooltip = document.createElement("div");
+      tooltip.className = "cy-tooltip";
+      tooltip.style.cssText = `
+        position: absolute;
+        background: rgba(0, 0, 0, 0.9);
+        color: white;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 12px;
+        pointer-events: none;
+        z-index: 1000;
+        display: none;
+        max-width: 300px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      `;
+      containerRef.current?.appendChild(tooltip);
 
-      if (isInCollapsedGroup) continue; // Don't show nodes in collapsed groups
+      // Event handlers
+      cy.on("tap", "node:not(.node-ghost)", (evt) => {
+        const node = evt.target as NodeSingular;
+        const currentNodes = nodesRef.current;
+        const nodeData = currentNodes.find((n) => n.id === node.id());
+        onNodeSelectRef.current?.(nodeData || null);
 
-      // Assign parent for expanded groups so layout keeps them together
-      const hasExpandedGroup = node.groupId && !collapsedGroups.has(node.groupId);
-      
-      elements.push({
-        data: {
-          id: node.id,
-          label: node.name,
-          parent: hasExpandedGroup ? `group_${node.groupId}` : undefined,
-          nodeType: node.type,
-          subtype: node.subtype,
-          repo: node.repo,
-          description: node.metadata?.description,
-          schema: node.metadata?.schema,
-          groupId: node.groupId,
-          ...colors,
-        },
-        classes: `node-${node.type}`,
-      });
-    }
-
-    // Create edge elements
-    for (const edge of filteredEdges) {
-      // Skip edges to/from nodes in collapsed groups
-      const fromNode = filteredNodes.find((n) => n.id === edge.from);
-      const toNode = filteredNodes.find((n) => n.id === edge.to);
-      
-      if (!fromNode || !toNode) continue;
-      
-      const fromCollapsed = fromNode.groupId && collapsedGroups.has(fromNode.groupId);
-      const toCollapsed = toNode.groupId && collapsedGroups.has(toNode.groupId);
-      
-      if (fromCollapsed || toCollapsed) continue;
-
-      elements.push({
-        data: {
-          id: edge.id,
-          source: edge.from,
-          target: edge.to,
-          edgeType: edge.type,
-          label: edge.type.replace("_", " "),
-        },
-        classes: `edge-${edge.type}`,
-      });
-    }
-
-    return elements;
-  }, [nodes, edges, groups, flows, selectedFlow, collapsedGroups]);
-
-  // Determine appropriate layout based on graph size
-  const getLayoutConfig = useCallback((nodeCount: number, isUpdate: boolean) => {
-    // For very large graphs, use a simple grid layout (fast)
-    if (nodeCount > 1000) {
-      return {
-        name: "grid",
-        fit: true,
-        padding: 50,
-        avoidOverlap: true,
-        condense: true,
-        rows: Math.ceil(Math.sqrt(nodeCount)),
-      };
-    }
-    // For medium graphs, use cose with reduced iterations
-    return {
-      name: "cose",
-      idealEdgeLength: 100,
-      nodeOverlap: 20,
-      refresh: 20,
-      fit: true,
-      padding: 50,
-      randomize: false,
-      componentSpacing: 100,
-      nodeRepulsion: 400000,
-      edgeElasticity: 100,
-      nestingFactor: 5,
-      gravity: 80,
-      numIter: isUpdate ? 100 : 300, // Reduced iterations
-      initialTemp: 200,
-      coolingFactor: 0.95,
-      minTemp: 1.0,
-    };
-  }, []);
-
-  // Initialize Cytoscape
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    const elements = buildElements();
-    const layoutConfig = getLayoutConfig(nodes.length, false);
-
-    const cy = cytoscape({
-      container: containerRef.current,
-      elements: elements,
-      style: [
-        // Node styles
-        {
-          selector: "node",
-          style: {
-            "background-color": "data(bg)",
-            "border-color": "data(border)",
-            "border-width": 2,
-            label: "data(label)",
-            color: "data(text)",
-            "font-size": 11,
-            "text-valign": "center",
-            "text-halign": "center",
-            "text-wrap": "ellipsis",
-            "text-max-width": "100px",
-            width: 120,
-            height: 40,
-            shape: "round-rectangle",
-            "text-outline-color": "#0a0a0f",
-            "text-outline-width": 1,
-          },
-        },
-        // Collapsed group node styles - compact clickable box
-        {
-          selector: ".group-collapsed",
-          style: {
-            "background-color": "data(bg)",
-            "background-opacity": 0.9,
-            "border-color": "data(border)",
-            "border-width": 2,
-            "border-style": "solid",
-            label: "data(label)",
-            color: "#e5e7eb",
-            "font-size": 13,
-            "font-weight": "bold",
-            "text-valign": "center",
-            "text-halign": "center",
-            width: 160,
-            height: 50,
-            shape: "round-rectangle",
-            "text-wrap": "wrap",
-            "text-max-width": "140px",
-          },
-        },
-        // Expanded group node styles - lightweight dashed boundary, draggable
-        {
-          selector: ".group-expanded",
-          style: {
-            "background-color": "data(bg)",
-            "background-opacity": 0.1,
-            "border-color": "data(border)",
-            "border-width": 2,
-            "border-style": "dashed",
-            label: "data(label)",
-            color: "data(border)",
-            "font-size": 12,
-            "font-weight": "bold",
-            "text-valign": "top",
-            "text-halign": "center",
-            "text-margin-y": 8,
-            padding: "20px",
-            shape: "round-rectangle",
-            "text-wrap": "wrap",
-            "text-max-width": "200px",
-          },
-        },
-        // Make expanded groups grabbable (cursor hint)
-        {
-          selector: ".group-expanded:active",
-          style: {
-            "overlay-opacity": 0.1,
-            "overlay-color": "#ffffff",
-          },
-        },
-        // Edge styles
-        {
-          selector: "edge",
-          style: {
-            width: 1.5,
-            "line-color": "#4b5563",
-            "target-arrow-color": "#4b5563",
-            "target-arrow-shape": "triangle",
-            "curve-style": "bezier",
-            opacity: 0.6,
-          },
-        },
-        {
-          selector: "edge.edge-ref, edge.edge-source",
-          style: {
-            "line-color": "#10b981",
-            "target-arrow-color": "#10b981",
-          },
-        },
-        {
-          selector: "edge.edge-sql_dependency",
-          style: {
-            "line-color": "#6366f1",
-            "target-arrow-color": "#6366f1",
-          },
-        },
-        {
-          selector: "edge.edge-dag_edge",
-          style: {
-            "line-color": "#f59e0b",
-            "target-arrow-color": "#f59e0b",
-            "line-style": "dashed",
-          },
-        },
-        // Selected node
-        {
-          selector: "node:selected",
-          style: {
-            "border-width": 3,
-            "border-color": "#ffffff",
-          },
-        },
-        // Highlighted nodes (neighbors)
-        {
-          selector: ".highlighted",
-          style: {
-            opacity: 1,
-          },
-        },
-        {
-          selector: ".dimmed",
-          style: {
-            opacity: 0.2,
-          },
-        },
-      ],
-      layout: layoutConfig,
-      minZoom: 0.1,
-      maxZoom: 3,
-      wheelSensitivity: 0.3,
-    });
-
-    // Tooltip element
-    const tooltip = document.createElement("div");
-    tooltip.className = "cy-tooltip";
-    tooltip.style.cssText = `
-      position: absolute;
-      background: rgba(0, 0, 0, 0.9);
-      color: white;
-      padding: 8px 12px;
-      border-radius: 6px;
-      font-size: 12px;
-      pointer-events: none;
-      z-index: 1000;
-      display: none;
-      max-width: 300px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-    `;
-    containerRef.current?.appendChild(tooltip);
-
-    // Event handlers - use refs to avoid stale closures
-    cy.on("tap", "node:not(.group-node)", (evt) => {
-      const node = evt.target as NodeSingular;
-      const currentNodes = nodesRef.current;
-      const nodeData = currentNodes.find((n) => n.id === node.id());
-      onNodeSelectRef.current?.(nodeData || null);
-
-      // Highlight neighborhood
-      cy.elements().removeClass("highlighted dimmed");
-      const neighborhood = node.closedNeighborhood();
-      cy.elements().addClass("dimmed");
-      neighborhood.removeClass("dimmed").addClass("highlighted");
-    });
-
-    // Only expand collapsed groups on click - expanded groups can be dragged
-    // Use the context bar pills to collapse expanded groups
-    cy.on("tap", ".group-collapsed", (evt) => {
-      const groupNode = evt.target as NodeSingular;
-      const groupId = groupNode.data("groupId");
-      
-      setCollapsedGroups((prev) => {
-        const next = new Set(prev);
-        next.delete(groupId); // Expand the group
-        return next;
-      });
-    });
-
-    cy.on("dbltap", "node:not(.group-node)", (evt) => {
-      const node = evt.target as NodeSingular;
-      const currentNodes = nodesRef.current;
-      const nodeData = currentNodes.find((n) => n.id === node.id());
-      if (nodeData) {
-        onNodeDoubleClickRef.current?.(nodeData);
-      }
-    });
-
-    cy.on("tap", (evt) => {
-      if (evt.target === cy) {
-        onNodeSelectRef.current?.(null);
+        // Highlight neighborhood
         cy.elements().removeClass("highlighted dimmed");
-      }
-    });
-
-    // Tooltip on hover
-    cy.on("mouseover", "node:not(.group-node)", (evt) => {
-      const node = evt.target;
-      const data = node.data();
-      
-      let content = `<strong>${data.label}</strong>`;
-      if (data.nodeType) content += `<br/>Type: ${data.nodeType}`;
-      if (data.schema) content += `<br/>Schema: ${data.schema}`;
-      if (data.description) content += `<br/>${data.description.substring(0, 100)}...`;
-      
-      tooltip.innerHTML = content;
-      tooltip.style.display = "block";
-    });
-
-    cy.on("mouseover", "edge", (evt) => {
-      const edge = evt.target;
-      const data = edge.data();
-      
-      tooltip.innerHTML = `<strong>${data.edgeType?.replace("_", " ") || "dependency"}</strong>`;
-      tooltip.style.display = "block";
-    });
-
-    cy.on("mouseout", "node, edge", () => {
-      tooltip.style.display = "none";
-    });
-
-    cy.on("mousemove", (evt) => {
-      if (tooltip.style.display === "block") {
-        tooltip.style.left = `${evt.originalEvent.offsetX + 10}px`;
-        tooltip.style.top = `${evt.originalEvent.offsetY + 10}px`;
-      }
-    });
-
-    // Viewport change handler - report current viewport for minimap
-    const reportViewport = () => {
-      if (!onViewportChangeRef.current) return;
-      const extent = cy.extent();
-      const bb = cy.elements().boundingBox();
-      onViewportChangeRef.current({
-        x: extent.x1,
-        y: extent.y1,
-        width: extent.w,
-        height: extent.h,
-        graphBounds: { x1: bb.x1, y1: bb.y1, x2: bb.x2, y2: bb.y2 },
+        const neighborhood = node.closedNeighborhood();
+        cy.elements().addClass("dimmed");
+        neighborhood.removeClass("dimmed").addClass("highlighted");
       });
-    };
 
-    // Subscribe to viewport events
-    cy.on("pan zoom resize", reportViewport);
-    cy.on("layoutstop", reportViewport);
-    // Initial report after layout settles
-    setTimeout(reportViewport, 100);
+      // Ghost node click
+      cy.on("tap", ".node-ghost", (evt) => {
+        const node = evt.target as NodeSingular;
+        const currentGhostNodes = ghostNodesRef.current;
+        const nodeData = currentGhostNodes.find((n) => n.id === node.id());
+        if (nodeData) {
+          onGhostNodeClickRef.current?.(nodeData);
+        }
+      });
 
-    cyRef.current = cy;
+      cy.on("dbltap", "node:not(.node-ghost)", (evt) => {
+        const node = evt.target as NodeSingular;
+        const currentNodes = nodesRef.current;
+        const nodeData = currentNodes.find((n) => n.id === node.id());
+        if (nodeData) {
+          onNodeDoubleClickRef.current?.(nodeData);
+        }
+      });
 
-    return () => {
-      tooltip.remove();
-      cy.destroy();
-    };
-  }, []); // Only run once on mount
+      cy.on("tap", (evt) => {
+        if (evt.target === cy) {
+          onNodeSelectRef.current?.(null);
+          cy.elements().removeClass("highlighted dimmed");
+        }
+      });
 
-  // Track if initial mount is complete to avoid duplicate layouts
-  const isInitialMount = useRef(true);
+      // Tooltip on hover
+      cy.on("mouseover", "node", (evt) => {
+        const node = evt.target;
+        const data = node.data();
 
-  // Update elements when data changes (but skip initial mount since init already handles it)
-  useEffect(() => {
-    if (!cyRef.current) return;
+        let content = `<strong>${data.label}</strong>`;
+        if (data.nodeType) content += `<br/>Type: ${data.nodeType}`;
+        if (data.relativeLayer !== undefined) {
+          // Use smart layer name if available
+          const smartName = smartLayerNamesRef.current?.[data.relativeLayer];
+          const layerName = smartName?.name || getLayerName(data.relativeLayer);
+          content += `<br/>Layer: ${layerName} (${data.relativeLayer})`;
+        }
+        if (data.isGhost) {
+          content += `<br/><em style="color: #fbbf24">Outside current flow</em>`;
+        }
 
-    // Skip the first run - the init effect already set up elements and layout
-    if (isInitialMount.current) {
-      isInitialMount.current = false;
-      return;
-    }
+        tooltip.innerHTML = content;
+        tooltip.style.display = "block";
+      });
 
-    const cy = cyRef.current;
-    cy.elements().remove();
-    cy.add(buildElements());
-    
-    const layoutConfig = getLayoutConfig(cy.nodes().length, true);
-    cy.layout(layoutConfig).run();
-  }, [buildElements, getLayoutConfig]);
+      cy.on("mouseout", "node, edge", () => {
+        tooltip.style.display = "none";
+      });
 
-  // Zoom controls
-  const zoomIn = () => cyRef.current?.zoom(cyRef.current.zoom() * 1.2);
-  const zoomOut = () => cyRef.current?.zoom(cyRef.current.zoom() / 1.2);
-  const fitToScreen = () => cyRef.current?.fit(undefined, 50);
+      cy.on("mousemove", (evt) => {
+        if (tooltip.style.display === "block") {
+          tooltip.style.left = `${evt.originalEvent.offsetX + 10}px`;
+          tooltip.style.top = `${evt.originalEvent.offsetY + 10}px`;
+        }
+      });
 
-  // Get expanded groups (groups that exist and are NOT in collapsedGroups)
-  const expandedGroups = groups.filter((g) => !collapsedGroups.has(g.id));
+      // Redraw swimlanes on viewport change
+      cy.on("pan zoom resize", () => {
+        requestAnimationFrame(drawSwimlanes);
+      });
 
-  // Collapse a group (add to collapsedGroups set)
-  const collapseGroup = (groupId: string) => {
-    setCollapsedGroups((prev) => new Set([...prev, groupId]));
-  };
+      // Initial swimlane draw after layout settles
+      setTimeout(() => {
+        drawSwimlanes();
+        // Fit to content
+        cy.fit(undefined, 50);
+      }, 100);
 
-  return (
-    <div className="relative w-full h-full">
-      <div ref={containerRef} className="w-full h-full bg-[#0a0a0f]" />
-      
-      {/* Expanded Groups Context Bar - compact pills only */}
-      {expandedGroups.length > 0 && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 flex flex-wrap items-center justify-center gap-2 max-w-[90%]">
-          {expandedGroups.map((group, index) => {
-            const nodeCount = nodes.filter((n) => n.groupId === group.id).length;
-            const color = GROUP_COLORS[index % GROUP_COLORS.length];
-            return (
-              <button
-                key={group.id}
-                onClick={() => collapseGroup(group.id)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-black/70 backdrop-blur-sm hover:bg-black/80 rounded-md text-xs transition-all group border"
-                style={{ borderColor: `${color.border}80` }}
-                title={`Click to collapse ${group.name}`}
-              >
-                <div 
-                  className="w-2 h-2 rounded-full" 
-                  style={{ backgroundColor: color.border }}
-                />
-                <span className="text-white/90 font-medium">{group.name}</span>
-                <span className="text-white/50">({nodeCount})</span>
-                <svg 
-                  className="w-3 h-3 text-white/30 group-hover:text-white/70 transition-colors" 
-                  fill="none" 
-                  viewBox="0 0 24 24" 
-                  stroke="currentColor"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            );
-          })}
+      cyRef.current = cy;
+
+      return () => {
+        tooltip.remove();
+        cy.destroy();
+      };
+    }, []); // Only run once on mount
+
+    // Update elements when data changes
+    useEffect(() => {
+      if (!cyRef.current) return;
+
+      const cy = cyRef.current;
+      const elements = buildElements();
+
+      // Batch update: remove old, add new
+      cy.elements().remove();
+      cy.add(elements);
+
+      // No layout needed - positions are pre-computed
+      // Just redraw swimlanes
+      requestAnimationFrame(drawSwimlanes);
+
+      // Fit to new content with animation
+      cy.animate({ fit: { eles: cy.elements(), padding: 50 } }, { duration: 300 });
+    }, [buildElements, drawSwimlanes]);
+
+    // Zoom controls
+    const zoomIn = () => cyRef.current?.zoom(cyRef.current.zoom() * 1.2);
+    const zoomOut = () => cyRef.current?.zoom(cyRef.current.zoom() / 1.2);
+    const fitToScreen = () => cyRef.current?.fit(undefined, 50);
+
+    return (
+      <div className="relative w-full h-full">
+        {/* Swimlane canvas (behind graph) */}
+        <canvas
+          ref={swimlaneCanvasRef}
+          className="absolute inset-0 pointer-events-none"
+          style={{ zIndex: 0 }}
+        />
+
+        {/* Cytoscape container */}
+        <div
+          ref={containerRef}
+          className="w-full h-full bg-[#0a0a0f]"
+          style={{ zIndex: 1 }}
+        />
+
+        {/* Zoom Controls */}
+        <div className="absolute bottom-4 right-4 flex flex-col gap-2" style={{ zIndex: 10 }}>
+          <button
+            onClick={zoomIn}
+            className="w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+            title="Zoom In"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v12M6 12h12" />
+            </svg>
+          </button>
+          <button
+            onClick={zoomOut}
+            className="w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+            title="Zoom Out"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 12h12" />
+            </svg>
+          </button>
+          <button
+            onClick={fitToScreen}
+            className="w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+            title="Fit to Screen (F)"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+            </svg>
+          </button>
         </div>
-      )}
-      
-      {/* Zoom Controls */}
-      <div className="absolute bottom-4 right-4 flex flex-col gap-2">
-        <button
-          onClick={zoomIn}
-          className="w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-          title="Zoom In (or scroll)"
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v12M6 12h12" />
-          </svg>
-        </button>
-        <button
-          onClick={zoomOut}
-          className="w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-          title="Zoom Out"
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 12h12" />
-          </svg>
-        </button>
-        <button
-          onClick={fitToScreen}
-          className="w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
-          title="Fit to Screen (F)"
-        >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-          </svg>
-        </button>
+
+        {/* Legend */}
+        <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-sm rounded-lg p-3 text-xs space-y-1.5" style={{ zIndex: 10 }}>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.source.border }} />
+            <span className="text-white/70">Source / Seed</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.model.border }} />
+            <span className="text-white/70">Model / Table</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.view.border }} />
+            <span className="text-white/70">View</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.external.border }} />
+            <span className="text-white/70">External</span>
+          </div>
+          <div className="border-t border-white/10 my-2" />
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded border-2 border-white" style={{ backgroundColor: LAYER_COLORS.anchor.bg }} />
+            <span className="text-white/70">Selected (Anchor)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded border border-dashed border-white/40 opacity-40" />
+            <span className="text-white/70">Ghost (outside flow)</span>
+          </div>
+        </div>
+
+        {/* Keyboard shortcuts hint */}
+        <div className="absolute bottom-4 left-52 text-xs text-white/30" style={{ zIndex: 10 }}>
+          Press <kbd className="px-1.5 py-0.5 bg-white/10 rounded">Esc</kbd> to deselect ·
+          <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">/</kbd> to search ·
+          <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">F</kbd> to fit
+        </div>
       </div>
-
-      {/* Legend */}
-      <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-sm rounded-lg p-3 text-xs space-y-1.5">
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.source.border }} />
-          <span className="text-white/70">Source / Seed</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.model.border }} />
-          <span className="text-white/70">Model / Table</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.view.border }} />
-          <span className="text-white/70">View</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.external.border }} />
-          <span className="text-white/70">External</span>
-        </div>
-        <div className="border-t border-white/10 my-2" />
-        <div className="flex items-center gap-2">
-          <div 
-            className="w-4 h-3 rounded-sm" 
-            style={{ 
-              backgroundColor: "#12121a", 
-              border: "1.5px dashed #3f3f5f" 
-            }} 
-          />
-          <span className="text-white/70">Group (related nodes)</span>
-        </div>
-        <div className="border-t border-white/10 my-2" />
-        <div className="text-white/40">Click group to expand/collapse</div>
-        <div className="text-white/40">Double-click node for details</div>
-      </div>
-
-      {/* Keyboard shortcuts hint */}
-      <div className="absolute bottom-4 left-52 text-xs text-white/30">
-        Press <kbd className="px-1.5 py-0.5 bg-white/10 rounded">Esc</kbd> to deselect · 
-        <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">/</kbd> to search · 
-        <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">F</kbd> to fit · 
-        <kbd className="px-1.5 py-0.5 bg-white/10 rounded ml-1">[</kbd> to go back
-      </div>
-    </div>
-  );
-});
+    );
+  }
+);
 
 export default GraphExplorer;

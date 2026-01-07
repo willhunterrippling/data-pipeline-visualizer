@@ -14,18 +14,35 @@ import {
   updateGroupNodeCounts,
   appendActivityLog,
   updateUsageStats,
+  updateNodeLayouts,
+  updateNodeSemanticLayers,
+  updateNodeImportanceScores,
+  insertLayerNames,
+  insertAnchorCandidates,
   DbNode,
   DbEdge,
   DbCitation,
 } from "../db";
+import { 
+  precomputeLayout, 
+  computeLayoutWithDiff, 
+  type NodePosition,
+  type IncrementalLayoutResult,
+} from "../graph/layout";
 import { parseDbtManifest, findManifestPath, parseDbtProjectFallback } from "./dbtParser";
 import { parseAirflowDags } from "./airflowParser";
 import { linkCrossRepo } from "./linker";
 import { enrichWithSnowflakeMetadata } from "./snowflakeMetadata";
 import { inferGroups as aiInferGroups } from "../ai/grouping";
 import { proposeFlows as aiProposeFlows } from "../ai/flows";
+import { generateLayerNames } from "../ai/layerNaming";
 import { batchExplainNodes } from "../ai/explain";
 import { resetUsageTracking, getUsageStats as getAiUsageStats } from "../ai/client";
+import { 
+  classifyAllNodes, 
+  computeImportanceScores, 
+  getTopAnchorCandidates 
+} from "../graph/semantic";
 import type { GraphNode, GraphEdge, Citation, IndexingStageId } from "../types";
 
 export interface IndexerConfig {
@@ -44,6 +61,11 @@ function graphNodeToDb(node: GraphNode): Omit<DbNode, "created_at"> {
     group_id: node.groupId || null,
     repo: node.repo || null,
     metadata: node.metadata ? JSON.stringify(node.metadata) : null,
+    layout_x: node.layoutX ?? null,
+    layout_y: node.layoutY ?? null,
+    layout_layer: node.layoutLayer ?? null,
+    semantic_layer: node.semanticLayer ?? null,
+    importance_score: node.importanceScore ?? null,
   };
 }
 
@@ -77,6 +99,10 @@ export class Indexer {
   private allCitations: Citation[] = [];
   private stageStartTime: number = 0;
   private currentStage: IndexingStageId | null = null;
+  
+  // Previous layout data for incremental layout support
+  private previousPositions: Map<string, NodePosition> = new Map();
+  private previousEdgeCount: number = 0;
 
   constructor(jobId: string, config: IndexerConfig) {
     this.jobId = jobId;
@@ -124,6 +150,9 @@ export class Indexer {
       // Reset AI usage tracking for this job
       resetUsageTracking();
 
+      // Capture previous layout data for incremental layout support
+      await this.capturePreviousLayout();
+
       // Clear existing data
       clearAllData();
 
@@ -145,8 +174,17 @@ export class Indexer {
       // Stage 6: Cross-repo linking
       await this.stageCrossRepoLink();
 
-      // Stage 7: AI grouping
-      await this.stageAiGrouping();
+      // Stage 6.5: Pre-compute layout (after nodes/edges are stored)
+      await this.stagePrecomputeLayout();
+
+      // Stage 6.6: Semantic layer classification
+      await this.stageSemanticClassification();
+
+      // Stage 6.7: Importance scoring and anchor candidates
+      await this.stageImportanceScoring();
+
+      // Stage 7: AI grouping (repurposed for layer naming)
+      await this.stageAiLayerNaming();
 
       // Stage 8: AI flows
       await this.stageAiFlows();
@@ -342,6 +380,211 @@ export class Indexer {
     );
   }
 
+  /**
+   * Capture previous layout positions before clearing data.
+   * This enables incremental layout on subsequent indexing runs.
+   */
+  private async capturePreviousLayout(): Promise<void> {
+    try {
+      const db = getDb();
+      
+      // Get existing layout positions
+      const existingNodes = db.prepare(`
+        SELECT id, layout_x, layout_y, layout_layer 
+        FROM nodes 
+        WHERE layout_x IS NOT NULL
+      `).all() as Array<{ id: string; layout_x: number; layout_y: number; layout_layer: number }>;
+      
+      for (const node of existingNodes) {
+        this.previousPositions.set(node.id, {
+          x: node.layout_x,
+          y: node.layout_y,
+          layer: node.layout_layer,
+        });
+      }
+      
+      // Get previous edge count
+      const edgeCount = db.prepare("SELECT COUNT(*) as count FROM edges").get() as { count: number };
+      this.previousEdgeCount = edgeCount.count;
+      
+      if (this.previousPositions.size > 0) {
+        this.log(`Captured ${this.previousPositions.size} previous layout positions for incremental update`);
+      }
+    } catch (error) {
+      // Database might not exist yet on first run
+      this.previousPositions.clear();
+      this.previousEdgeCount = 0;
+    }
+  }
+
+  private async stagePrecomputeLayout(): Promise<void> {
+    this.updateProgress("cross_repo_link", 90, `Pre-computing layout for ${this.allNodes.length} nodes...`);
+
+    const startTime = Date.now();
+
+    // Convert to layout format
+    const layoutNodes = this.allNodes.map((n) => ({ id: n.id, name: n.name }));
+    const layoutEdges = this.allEdges.map((e) => ({ from: e.from, to: e.to }));
+
+    // Yield to event loop before CPU-intensive layout computation
+    // This allows pending HTTP requests (like status polls) to be processed
+    await new Promise(resolve => setImmediate(resolve));
+
+    // Use incremental layout if we have previous positions
+    let result: IncrementalLayoutResult;
+    
+    if (this.previousPositions.size > 0) {
+      result = computeLayoutWithDiff(
+        layoutNodes,
+        layoutEdges,
+        this.previousPositions,
+        this.previousEdgeCount
+      );
+      
+      if (result.usedIncremental) {
+        this.log(`Incremental layout: +${result.addedCount} nodes, -${result.removedCount} nodes`);
+      }
+    } else {
+      // Full layout for first run
+      const fullResult = precomputeLayout(layoutNodes, layoutEdges);
+      result = {
+        ...fullResult,
+        usedIncremental: false,
+        addedCount: layoutNodes.length,
+        removedCount: 0,
+      };
+    }
+    
+    // Yield again after layout to allow pending requests to complete
+    await new Promise(resolve => setImmediate(resolve));
+
+    // Store layout positions in database
+    const layoutPositions = Array.from(result.positions.entries()).map(([nodeId, pos]) => ({
+      nodeId,
+      x: pos.x,
+      y: pos.y,
+      layer: pos.layer,
+    }));
+
+    updateNodeLayouts(layoutPositions);
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const layerCount = new Set(layoutPositions.map((p) => p.layer)).size;
+    const layoutType = result.usedIncremental ? "Incremental" : "Full";
+    
+    this.updateProgress(
+      "cross_repo_link",
+      95,
+      `${layoutType} layout computed in ${elapsed}s: ${layerCount} layers, bounds ${Math.round(result.bounds.maxX - result.bounds.minX)}x${Math.round(result.bounds.maxY - result.bounds.minY)}`
+    );
+
+    // Update layout positions on in-memory nodes too
+    for (const node of this.allNodes) {
+      const pos = result.positions.get(node.id);
+      if (pos) {
+        node.layoutX = pos.x;
+        node.layoutY = pos.y;
+        node.layoutLayer = pos.layer;
+      }
+    }
+  }
+
+  private async stageSemanticClassification(): Promise<void> {
+    this.updateProgress("ai_grouping", 0, `Classifying ${this.allNodes.length} nodes into semantic layers...`);
+
+    // Classify all nodes
+    const classifications = classifyAllNodes(this.allNodes);
+    
+    // Update in-memory nodes
+    const classMap = new Map(classifications.map(c => [c.nodeId, c.semanticLayer]));
+    for (const node of this.allNodes) {
+      node.semanticLayer = classMap.get(node.id);
+    }
+
+    // Store in database
+    updateNodeSemanticLayers(classifications);
+
+    // Count by layer
+    const layerCounts = new Map<string, number>();
+    for (const c of classifications) {
+      layerCounts.set(c.semanticLayer, (layerCounts.get(c.semanticLayer) || 0) + 1);
+    }
+
+    const summary = [...layerCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([layer, count]) => `${layer}: ${count}`)
+      .join(", ");
+
+    this.updateProgress("ai_grouping", 15, `Semantic classification: ${summary}`);
+  }
+
+  private async stageImportanceScoring(): Promise<void> {
+    this.updateProgress("ai_grouping", 20, `Computing importance scores for anchor suggestions...`);
+
+    // Compute importance scores
+    const scores = computeImportanceScores(this.allNodes, this.allEdges);
+
+    // Update in-memory nodes
+    const scoreMap = new Map(scores.map(s => [s.nodeId, s.importanceScore]));
+    for (const node of this.allNodes) {
+      node.importanceScore = scoreMap.get(node.id);
+    }
+
+    // Store importance scores in nodes table
+    updateNodeImportanceScores(scores.map(s => ({
+      nodeId: s.nodeId,
+      importanceScore: s.importanceScore,
+    })));
+
+    // Get and store top anchor candidates
+    const topCandidates = getTopAnchorCandidates(this.allNodes, this.allEdges, 50);
+    insertAnchorCandidates(topCandidates.map(c => ({
+      node_id: c.nodeId,
+      importance_score: c.importanceScore,
+      upstream_count: c.upstreamCount,
+      downstream_count: c.downstreamCount,
+      total_connections: c.totalConnections,
+      reason: c.reason,
+    })));
+
+    const topNames = topCandidates.slice(0, 3).map(c => {
+      const node = this.allNodes.find(n => n.id === c.nodeId);
+      return node?.name || c.nodeId;
+    }).join(", ");
+
+    this.updateProgress("ai_grouping", 35, `Identified ${topCandidates.length} anchor candidates: ${topNames}...`);
+  }
+
+  private async stageAiLayerNaming(): Promise<void> {
+    this.updateProgress("ai_grouping", 40, "Generating meaningful layer names...");
+
+    const hasApiKey = !!process.env.OPENAI_API_KEY;
+
+    if (!hasApiKey) {
+      this.updateProgress("ai_grouping", 100, "No AI API key, layer names will use semantic defaults");
+      return;
+    }
+
+    try {
+      const layerNames = await generateLayerNames(this.allNodes, (progress, message) => {
+        // Map progress (0-100) to stage progress (40-70)
+        const mappedProgress = 40 + Math.round(progress * 0.3);
+        this.updateProgress("ai_grouping", mappedProgress, message);
+      });
+
+      this.updateProgress("ai_grouping", 75, `Storing ${layerNames.length} layer names...`);
+      insertLayerNames(layerNames);
+
+      const layerSummary = layerNames.slice(0, 3).map(l => l.name).join(", ");
+      this.updateProgress("ai_grouping", 80, `Generated layer names: ${layerSummary}...`);
+    } catch (error) {
+      console.warn("AI layer naming failed:", error);
+      this.updateProgress("ai_grouping", 80, "Layer naming failed, using defaults");
+    }
+  }
+
+  // Keep existing AI grouping for backward compatibility, but it runs after layer naming
   private async stageAiGrouping(): Promise<void> {
     this.updateProgress("ai_grouping", 0, "Inferring groups from code structure...");
 

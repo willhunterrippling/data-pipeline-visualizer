@@ -3,67 +3,89 @@
 import { useEffect, useState, useCallback, useRef, Suspense, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dynamic from "next/dynamic";
-import FlowSelector from "@/components/FlowSelector";
 import SearchBar from "@/components/SearchBar";
 import DepthControl from "@/components/DepthControl";
-import CreateFlowModal from "@/components/CreateFlowModal";
-import type { GraphNode, GraphEdge, GraphGroup, GraphFlow } from "@/lib/types";
-import type { GraphExplorerRef } from "@/components/GraphExplorer";
+import OrientationHeader from "@/components/OrientationHeader";
+import type { GraphNode, GraphEdge, GraphFlow } from "@/lib/types";
+import type { GraphExplorerRef, VisibleNode } from "@/components/GraphExplorer";
+import type { VisibilityReason } from "@/lib/graph/visibility";
 
-// Simple markdown renderer for explanations
-function MarkdownContent({ content }: { content: string }) {
+// Dynamically import GraphExplorer to avoid SSR issues with Cytoscape
+const GraphExplorer = dynamic(() => import("@/components/GraphExplorer"), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full flex items-center justify-center">
+      <div className="text-white/60">Loading graph...</div>
+    </div>
+  ),
+});
+
+// Markdown content renderer for explanations
+interface MarkdownContentProps {
+  content: string;
+  nodes?: GraphNode[];
+  onNodeClick?: (node: GraphNode) => void;
+}
+
+function MarkdownContent({ content, nodes, onNodeClick }: MarkdownContentProps) {
   const rendered = useMemo(() => {
-    // Split into paragraphs
     const paragraphs = content.split(/\n\n+/);
     
     return paragraphs.map((paragraph, pIdx) => {
-      // Process inline formatting
       const processInline = (text: string): React.ReactNode[] => {
         const parts: React.ReactNode[] = [];
-        let remaining = text;
         let key = 0;
         
-        // Match patterns: **bold**, *italic*, `code`, and plain text
         const pattern = /(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`)/g;
         let lastIndex = 0;
         let match;
         
         while ((match = pattern.exec(text)) !== null) {
-          // Add plain text before match
           if (match.index > lastIndex) {
             parts.push(text.slice(lastIndex, match.index));
           }
           
           if (match[2]) {
-            // Bold: **text**
             parts.push(
               <strong key={key++} className="font-semibold text-white">
                 {match[2]}
               </strong>
             );
           } else if (match[3]) {
-            // Italic: *text*
             parts.push(
               <em key={key++} className="italic">
                 {match[3]}
               </em>
             );
           } else if (match[4]) {
-            // Code: `text`
-            parts.push(
-              <code
-                key={key++}
-                className="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs text-emerald-300"
-              >
-                {match[4]}
-              </code>
-            );
+            const codeText = match[4];
+            const matchingNode = nodes?.find(n => n.name === codeText);
+            
+            if (matchingNode && onNodeClick) {
+              parts.push(
+                <button
+                  key={key++}
+                  onClick={() => onNodeClick(matchingNode)}
+                  className="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs text-emerald-300 hover:bg-emerald-500/20 hover:text-emerald-200 cursor-pointer transition-colors"
+                >
+                  {codeText}
+                </button>
+              );
+            } else {
+              parts.push(
+                <code
+                  key={key++}
+                  className="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs text-emerald-300"
+                >
+                  {codeText}
+                </code>
+              );
+            }
           }
           
           lastIndex = pattern.lastIndex;
         }
         
-        // Add remaining plain text
         if (lastIndex < text.length) {
           parts.push(text.slice(lastIndex));
         }
@@ -71,7 +93,6 @@ function MarkdownContent({ content }: { content: string }) {
         return parts.length > 0 ? parts : [text];
       };
       
-      // Handle line breaks within paragraph
       const lines = paragraph.split(/\n/);
       
       return (
@@ -85,20 +106,34 @@ function MarkdownContent({ content }: { content: string }) {
         </p>
       );
     });
-  }, [content]);
+  }, [content, nodes, onNodeClick]);
   
   return <div className="text-sm text-white/80 leading-relaxed">{rendered}</div>;
 }
 
-// Dynamically import GraphExplorer to avoid SSR issues with Cytoscape
-const GraphExplorer = dynamic(() => import("@/components/GraphExplorer"), {
-  ssr: false,
-  loading: () => (
-    <div className="w-full h-full flex items-center justify-center">
-      <div className="text-white/60">Loading graph...</div>
-    </div>
-  ),
-});
+interface SmartLayerName {
+  layer: number;
+  name: string;
+  genericName: string;
+  nodeCount: number;
+  topPrefixes: string[];
+}
+
+interface LineageData {
+  anchor: GraphNode;
+  nodes: VisibleNode[];
+  edges: GraphEdge[];
+  ghostNodes: VisibleNode[];
+  layers: Record<string, { layer: number; name: string }>;
+  smartLayerNames: Record<number, SmartLayerName>;
+  visibilityReasons: Record<string, { reason: VisibilityReason; description: string }>;
+  stats: {
+    totalNodes: number;
+    visibleNodes: number;
+    ghostNodes: number;
+    layerRange: { min: number; max: number };
+  };
+}
 
 interface SidePanelData {
   node: GraphNode;
@@ -106,6 +141,7 @@ interface SidePanelData {
   upstream: GraphNode[];
   downstream: GraphNode[];
   isLoadingExplanation: boolean;
+  visibilityReason?: string;
 }
 
 function ExplorerContent() {
@@ -115,30 +151,20 @@ function ExplorerContent() {
   const graphRef = useRef<GraphExplorerRef>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   
-  const [nodes, setNodes] = useState<GraphNode[]>([]);
-  const [edges, setEdges] = useState<GraphEdge[]>([]);
-  const [groups, setGroups] = useState<GraphGroup[]>([]);
+  // State
+  const [anchorId, setAnchorId] = useState<string | null>(null);
+  const [flowId, setFlowId] = useState<string | null>(null);
+  const [upstreamDepth, setUpstreamDepth] = useState(3);
+  const [downstreamDepth, setDownstreamDepth] = useState(2);
+  
+  const [lineageData, setLineageData] = useState<LineageData | null>(null);
   const [flows, setFlows] = useState<GraphFlow[]>([]);
-  const [selectedFlow, setSelectedFlow] = useState<string | undefined>();
+  const [allNodes, setAllNodes] = useState<GraphNode[]>([]);
+  
   const [sidePanel, setSidePanel] = useState<SidePanelData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [neighborhoodDepth, setNeighborhoodDepth] = useState(3);
-  const [showCreateFlow, setShowCreateFlow] = useState(false);
-  const [showResetConfirm, setShowResetConfirm] = useState(false);
-  const [isResetting, setIsResetting] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
-  const [canGoBack, setCanGoBack] = useState(false);
-
-  // Track if we can go back in history
-  useEffect(() => {
-    setCanGoBack(window.history.length > 1);
-  }, [sidePanel]);
-
-  // Handle go back navigation
-  const handleGoBack = useCallback(() => {
-    router.back();
-  }, [router]);
 
   // Show toast notification
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
@@ -146,68 +172,35 @@ function ExplorerContent() {
     setTimeout(() => setToast(null), 3000);
   }, []);
 
-  // Update URL when flow changes
-  const updateUrl = useCallback((flowId?: string, nodeId?: string) => {
+  // Update URL when state changes
+  const updateUrl = useCallback((anchor?: string | null, flow?: string | null) => {
     const params = new URLSearchParams();
-    if (flowId) params.set("flow", flowId);
-    if (nodeId) params.set("node", nodeId);
+    if (anchor) params.set("anchor", anchor);
+    if (flow) params.set("flow", flow);
     const newUrl = params.toString() ? `?${params.toString()}` : "/explorer";
     router.push(newUrl, { scroll: false });
   }, [router]);
 
-  // Handle flow selection
-  const handleFlowSelect = useCallback((flowId: string | undefined) => {
-    setSelectedFlow(flowId);
-    updateUrl(flowId, sidePanel?.node.id);
-  }, [updateUrl, sidePanel]);
-
-  // Track if initial load is complete to prevent re-fetching on URL changes
-  const hasLoadedRef = useRef(false);
-
-  // Load graph data - only once on mount, not on URL changes
+  // Load initial data (flows and all nodes for search)
   useEffect(() => {
-    // Skip if already loaded - URL changes shouldn't refetch data
-    if (hasLoadedRef.current) {
-      return;
-    }
-
-    async function loadGraph() {
+    async function loadInitialData() {
       try {
         const res = await fetch("/api/graph");
         if (!res.ok) throw new Error("Failed to load graph");
         
         const data = await res.json();
-        hasLoadedRef.current = true;
-        setNodes(data.nodes);
-        setEdges(data.edges);
-        setGroups(data.groups);
         setFlows(data.flows);
+        setAllNodes(data.nodes);
 
         // Restore state from URL
-        const flowId = searchParams.get("flow");
-        const nodeId = searchParams.get("node");
+        const anchor = searchParams.get("anchor");
+        const flow = searchParams.get("flow");
         
-        if (flowId && data.flows.some((f: GraphFlow) => f.id === flowId)) {
-          setSelectedFlow(flowId);
-        } else if (!flowId) {
-          // Default to "Mechanized Outreach" flow if no flow specified
-          const defaultFlow = data.flows.find((f: GraphFlow) => 
-            f.name.toLowerCase().includes("mechanized outreach")
-          );
-          if (defaultFlow) {
-            setSelectedFlow(defaultFlow.id);
-          }
+        if (anchor) {
+          setAnchorId(anchor);
         }
-        
-        // Focus node from URL after graph loads
-        if (nodeId) {
-          setTimeout(() => {
-            const node = data.nodes.find((n: GraphNode) => n.id === nodeId);
-            if (node) {
-              handleNodeSelect(node);
-              graphRef.current?.focusNode(nodeId);
-            }
-          }, 500);
+        if (flow && data.flows.some((f: GraphFlow) => f.id === flow)) {
+          setFlowId(flow);
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unknown error");
@@ -215,83 +208,141 @@ function ExplorerContent() {
         setIsLoading(false);
       }
     }
-    loadGraph();
+    loadInitialData();
   }, [searchParams]);
 
-  // Handle node selection
-  const handleNodeSelect = useCallback(async (node: GraphNode | null) => {
-    if (!node) {
-      setSidePanel(null);
-      updateUrl(selectedFlow);
+  // Fetch lineage when anchor/flow/depth changes
+  useEffect(() => {
+    if (!anchorId) {
+      setLineageData(null);
       return;
     }
 
-    // Update URL
-    updateUrl(selectedFlow, node.id);
+    async function fetchLineage() {
+      try {
+        const params = new URLSearchParams({
+          upstreamDepth: upstreamDepth.toString(),
+          downstreamDepth: downstreamDepth.toString(),
+        });
+        if (flowId) params.set("flowId", flowId);
 
-    // Show loading state IMMEDIATELY so user sees feedback
+        const res = await fetch(`/api/lineage/${encodeURIComponent(anchorId!)}?${params}`);
+        if (!res.ok) throw new Error("Failed to load lineage");
+        
+        const data: LineageData = await res.json();
+        setLineageData(data);
+      } catch (err) {
+        console.error("Failed to fetch lineage:", err);
+        showToast("Failed to load lineage", "error");
+      }
+    }
+    fetchLineage();
+  }, [anchorId, flowId, upstreamDepth, downstreamDepth, showToast]);
+
+  // Handle node selection from search or graph click
+  const handleSelectAnchor = useCallback((node: GraphNode) => {
+    setAnchorId(node.id);
+    updateUrl(node.id, flowId);
+    
+    // Also show in side panel
     setSidePanel({
-      node: node,
-      explanation: undefined,
+      node,
       upstream: [],
       downstream: [],
       isLoadingExplanation: true,
     });
 
-    // Fetch node details
-    try {
-      const res = await fetch(`/api/node/${encodeURIComponent(node.id)}`);
-      if (!res.ok) throw new Error("Failed to load node");
-      
-      const data = await res.json();
-      setSidePanel({
-        node: data.node,
-        explanation: data.explanation,
-        upstream: data.upstream,
-        downstream: data.downstream,
-        isLoadingExplanation: !data.explanation,
-      });
-
-      // If no explanation cached, generate one
-      if (!data.explanation) {
-        const explainRes = await fetch("/api/explain", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ nodeId: node.id }),
-        });
-        
-        if (explainRes.ok) {
-          const explainData = await explainRes.json();
-          setSidePanel((prev) =>
-            prev
-              ? { ...prev, explanation: explainData.explanation, isLoadingExplanation: false }
-              : null
-          );
-        }
-      }
-    } catch (err) {
-      console.error("Failed to load node details:", err);
-    }
-  }, [selectedFlow, updateUrl]);
-
-  // Handle node double-click (column lineage)
-  const handleNodeDoubleClick = useCallback((_node: GraphNode) => {
-    // TODO: Open column lineage modal in the future
-    // For now, the single-click side panel provides the detail view
-  }, []);
-
-  // Handle search selection - focus on node in graph
-  const handleSearchSelect = useCallback((node: GraphNode) => {
-    handleNodeSelect(node);
+    // Focus on the node
     setTimeout(() => {
       graphRef.current?.focusNode(node.id);
-    }, 100);
-  }, [handleNodeSelect]);
+    }, 200);
+
+    // Fetch node details
+    fetch(`/api/node/${encodeURIComponent(node.id)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        setSidePanel({
+          node: data.node,
+          explanation: data.explanation,
+          upstream: data.upstream,
+          downstream: data.downstream,
+          isLoadingExplanation: !data.explanation,
+        });
+
+        // Generate explanation if not cached
+        if (!data.explanation) {
+          fetch("/api/explain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ nodeId: node.id }),
+          })
+            .then((res) => res.json())
+            .then((explainData) => {
+              setSidePanel((prev) =>
+                prev
+                  ? { ...prev, explanation: explainData.explanation, isLoadingExplanation: false }
+                  : null
+              );
+            });
+        }
+      });
+  }, [flowId, updateUrl]);
+
+  // Handle graph node click (different from anchor selection)
+  const handleNodeClick = useCallback((node: GraphNode | null) => {
+    if (!node) {
+      setSidePanel(null);
+      return;
+    }
+
+    // Get visibility reason if available
+    const visibilityReason = lineageData?.visibilityReasons[node.id]?.description;
+
+    setSidePanel({
+      node,
+      upstream: [],
+      downstream: [],
+      isLoadingExplanation: true,
+      visibilityReason,
+    });
+
+    // Fetch details
+    fetch(`/api/node/${encodeURIComponent(node.id)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        setSidePanel((prev) => ({
+          ...prev!,
+          node: data.node,
+          explanation: data.explanation,
+          upstream: data.upstream,
+          downstream: data.downstream,
+          isLoadingExplanation: !data.explanation,
+        }));
+      });
+  }, [lineageData]);
+
+  // Handle ghost node click
+  const handleGhostNodeClick = useCallback((node: VisibleNode) => {
+    // Show options modal or expand to include
+    showToast(`${node.name} is outside the current flow`, "success");
+  }, [showToast]);
+
+  // Clear anchor
+  const handleClearAnchor = useCallback(() => {
+    setAnchorId(null);
+    setSidePanel(null);
+    updateUrl(null, flowId);
+  }, [flowId, updateUrl]);
+
+  // Clear flow
+  const handleClearFlow = useCallback(() => {
+    setFlowId(null);
+    updateUrl(anchorId, null);
+  }, [anchorId, updateUrl]);
 
   // Keyboard shortcuts
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // Don't trigger if in an input
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         if (e.key === "Escape") {
           (e.target as HTMLElement).blur();
@@ -302,7 +353,6 @@ function ExplorerContent() {
       switch (e.key) {
         case "Escape":
           setSidePanel(null);
-          updateUrl(selectedFlow);
           break;
         case "/":
           e.preventDefault();
@@ -312,82 +362,16 @@ function ExplorerContent() {
         case "F":
           graphRef.current?.fitToScreen();
           break;
-        case "[":
-          if (window.history.length > 1) {
-            router.back();
-          }
-          break;
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedFlow, updateUrl, router]);
+  }, []);
 
-  // Handle browser back/forward navigation
-  useEffect(() => {
-    const handlePopState = () => {
-      const params = new URLSearchParams(window.location.search);
-      const nodeId = params.get("node");
-      if (nodeId) {
-        const node = nodes.find(n => n.id === nodeId);
-        if (node) {
-          // Directly set side panel without triggering URL update
-          fetch(`/api/node/${encodeURIComponent(node.id)}`)
-            .then(res => res.json())
-            .then(data => {
-              setSidePanel({
-                node: data.node,
-                explanation: data.explanation,
-                upstream: data.upstream,
-                downstream: data.downstream,
-                isLoadingExplanation: !data.explanation,
-              });
-            });
-          graphRef.current?.focusNode(nodeId);
-        }
-      } else {
-        setSidePanel(null);
-        graphRef.current?.deselectAll();
-      }
-    };
-
-    window.addEventListener("popstate", handlePopState);
-    return () => window.removeEventListener("popstate", handlePopState);
-  }, [nodes]);
-
-  // Re-index handler
-  const handleReindex = useCallback(async () => {
-    try {
-      showToast("Starting re-index...");
-      const res = await fetch("/api/ingest", { method: "POST" });
-      if (!res.ok) throw new Error("Failed to start re-index");
-      
-      const { jobId } = await res.json();
-      router.push(`/?jobId=${jobId}`);
-    } catch (err) {
-      showToast("Failed to start re-index", "error");
-    }
-  }, [router, showToast]);
-
-  // Reset handler
-  const handleReset = useCallback(async () => {
-    setIsResetting(true);
-    try {
-      const res = await fetch("/api/reset", { method: "POST" });
-      if (res.ok) {
-        showToast("All data cleared. Redirecting...");
-        setTimeout(() => router.push("/"), 500);
-      } else {
-        showToast("Failed to reset database", "error");
-      }
-    } catch (err) {
-      showToast("Failed to reset", "error");
-    } finally {
-      setIsResetting(false);
-      setShowResetConfirm(false);
-    }
-  }, [router, showToast]);
+  // Get current flow object
+  const currentFlow = flowId ? flows.find((f) => f.id === flowId) : null;
+  const anchorNode = lineageData?.anchor || allNodes.find((n) => n.id === anchorId);
 
   if (isLoading) {
     return (
@@ -440,78 +424,80 @@ function ExplorerContent() {
             
             <div className="h-6 w-px bg-white/20" />
 
-            {canGoBack && (
-              <button
-                onClick={handleGoBack}
-                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
-                title="Go back ([)"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
-              </button>
-            )}
-            
-            <FlowSelector
-              flows={flows}
-              selectedFlow={selectedFlow}
-              onSelect={handleFlowSelect}
-            />
-            
-            <button
-              onClick={() => setShowCreateFlow(true)}
-              className="px-3 py-2 text-sm bg-white/10 hover:bg-white/20 rounded-lg transition-colors"
+            {/* Flow Selector (optional lens) */}
+            <select
+              value={flowId || ""}
+              onChange={(e) => {
+                const newFlowId = e.target.value || null;
+                setFlowId(newFlowId);
+                updateUrl(anchorId, newFlowId);
+              }}
+              className="px-3 py-2 text-sm bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
             >
-              + New Flow
-            </button>
+              <option value="">All nodes (no flow filter)</option>
+              {flows.map((flow) => (
+                <option key={flow.id} value={flow.id}>
+                  {flow.name} ({flow.memberNodes.length} nodes)
+                </option>
+              ))}
+            </select>
           </div>
 
           <div className="flex items-center gap-4">
-            <SearchBar onSelect={handleSearchSelect} ref={searchInputRef} />
-            <DepthControl depth={neighborhoodDepth} onChange={setNeighborhoodDepth} />
+            <SearchBar onSelect={handleSelectAnchor} ref={searchInputRef} />
+            <DepthControl
+              upstreamDepth={upstreamDepth}
+              downstreamDepth={downstreamDepth}
+              onUpstreamChange={setUpstreamDepth}
+              onDownstreamChange={setDownstreamDepth}
+            />
             
             <div className="text-sm text-white/40">
-              {nodes.length} nodes · {edges.length} edges
+              {lineageData ? `${lineageData.stats.visibleNodes} nodes` : `${allNodes.length} total`}
             </div>
-
-            <button
-              onClick={handleReindex}
-              className="px-3 py-2 text-sm text-white/60 hover:text-white hover:bg-white/10 rounded-lg transition-colors"
-              title="Re-index repositories"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-            </button>
-
-            <button
-              onClick={() => setShowResetConfirm(true)}
-              className="px-3 py-2 text-sm text-red-400/60 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-colors"
-              title="Reset all data"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
           </div>
         </div>
       </header>
 
+      {/* Orientation Header */}
+      <OrientationHeader
+        anchor={anchorNode || null}
+        flow={currentFlow || null}
+        stats={lineageData?.stats}
+        onClearAnchor={anchorId ? handleClearAnchor : undefined}
+        onClearFlow={flowId ? handleClearFlow : undefined}
+        onAnchorClick={() => anchorId && graphRef.current?.centerOnAnchor()}
+      />
+
       {/* Main content */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Graph - min-w-0 allows flex item to shrink below content size */}
+        {/* Graph */}
         <div className="flex-1 min-w-0 relative overflow-hidden">
-          <GraphExplorer
-            ref={graphRef}
-            nodes={nodes}
-            edges={edges}
-            groups={groups}
-            flows={flows}
-            selectedFlow={selectedFlow}
-            onNodeSelect={handleNodeSelect}
-            onNodeDoubleClick={handleNodeDoubleClick}
-          />
-          
+          {lineageData ? (
+            <GraphExplorer
+              ref={graphRef}
+              nodes={lineageData.nodes}
+              edges={lineageData.edges}
+              ghostNodes={lineageData.ghostNodes}
+              anchorId={anchorId}
+              layerRange={lineageData.stats.layerRange}
+              smartLayerNames={lineageData.smartLayerNames}
+              onNodeSelect={handleNodeClick}
+              onGhostNodeClick={handleGhostNodeClick}
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center bg-[#0a0a0f]">
+              <div className="text-center space-y-4">
+                <div className="text-4xl">🔍</div>
+                <div className="text-white/60">
+                  Search for a table to explore its lineage
+                </div>
+                <div className="text-white/40 text-sm">
+                  Press <kbd className="px-2 py-1 bg-white/10 rounded">/</kbd> to search
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Side Panel */}
@@ -519,11 +505,11 @@ function ExplorerContent() {
           <div className="w-96 border-l border-white/10 bg-[#0f0f14] overflow-y-auto">
             <div className="p-4 space-y-6">
               {/* Header */}
-              <div className="flex items-start justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span
-                      className={`text-xs px-2 py-0.5 rounded ${
+                      className={`text-xs px-2 py-0.5 rounded flex-shrink-0 ${
                         sidePanel.node.type === "source"
                           ? "bg-blue-500/20 text-blue-300"
                           : sidePanel.node.type === "model"
@@ -533,20 +519,19 @@ function ExplorerContent() {
                     >
                       {sidePanel.node.type}
                     </span>
-                    {sidePanel.node.subtype && (
-                      <span className="text-xs text-white/40">{sidePanel.node.subtype}</span>
+                    {sidePanel.visibilityReason && (
+                      <span className="text-xs px-2 py-0.5 rounded bg-white/10 text-white/60">
+                        {sidePanel.visibilityReason}
+                      </span>
                     )}
                   </div>
-                  <h2 className="text-lg font-semibold mt-1">{sidePanel.node.name}</h2>
+                  <h2 className="text-lg font-semibold mt-1 break-words">{sidePanel.node.name}</h2>
                   <p className="text-xs text-white/40 font-mono mt-0.5 break-all">
                     {sidePanel.node.id}
                   </p>
                 </div>
                 <button
-                  onClick={() => {
-                    setSidePanel(null);
-                    updateUrl(selectedFlow);
-                  }}
+                  onClick={() => setSidePanel(null)}
                   className="p-1 hover:bg-white/10 rounded transition-colors"
                   title="Close (Esc)"
                 >
@@ -556,19 +541,18 @@ function ExplorerContent() {
                 </button>
               </div>
 
-              {/* Copy Link Button */}
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(window.location.href);
-                  showToast("Link copied to clipboard");
-                }}
-                className="w-full px-3 py-2 text-sm bg-white/5 hover:bg-white/10 rounded-lg transition-colors flex items-center justify-center gap-2"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
-                </svg>
-                Share Link
-              </button>
+              {/* Set as Anchor button */}
+              {sidePanel.node.id !== anchorId && (
+                <button
+                  onClick={() => handleSelectAnchor(sidePanel.node)}
+                  className="w-full px-3 py-2 text-sm bg-purple-500/20 hover:bg-purple-500/30 border border-purple-500/30 rounded-lg transition-colors flex items-center justify-center gap-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                  </svg>
+                  Set as Anchor
+                </button>
+              )}
 
               {/* Explanation */}
               <div>
@@ -579,47 +563,15 @@ function ExplorerContent() {
                     Generating explanation...
                   </div>
                 ) : sidePanel.explanation ? (
-                  <MarkdownContent content={sidePanel.explanation} />
+                  <MarkdownContent 
+                    content={sidePanel.explanation}
+                    nodes={allNodes}
+                    onNodeClick={handleSelectAnchor}
+                  />
                 ) : (
                   <p className="text-sm text-white/40 italic">No explanation available.</p>
                 )}
               </div>
-
-              {/* Metadata */}
-              {sidePanel.node.metadata && (
-                <div>
-                  <h3 className="text-sm font-medium text-white/60 mb-2">Details</h3>
-                  <dl className="text-sm space-y-1">
-                    {sidePanel.node.metadata.schema && (
-                      <div className="flex justify-between">
-                        <dt className="text-white/40">Schema</dt>
-                        <dd className="font-mono">{sidePanel.node.metadata.schema}</dd>
-                      </div>
-                    )}
-                    {sidePanel.node.metadata.materialization && (
-                      <div className="flex justify-between">
-                        <dt className="text-white/40">Materialization</dt>
-                        <dd>{sidePanel.node.metadata.materialization}</dd>
-                      </div>
-                    )}
-                    {sidePanel.node.metadata.tags && sidePanel.node.metadata.tags.length > 0 && (
-                      <div>
-                        <dt className="text-white/40 mb-1">Tags</dt>
-                        <dd className="flex flex-wrap gap-1">
-                          {sidePanel.node.metadata.tags.map((tag) => (
-                            <span
-                              key={tag}
-                              className="text-xs bg-white/10 px-2 py-0.5 rounded"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                        </dd>
-                      </div>
-                    )}
-                  </dl>
-                </div>
-              )}
 
               {/* Upstream */}
               {sidePanel.upstream.length > 0 && (
@@ -631,14 +583,11 @@ function ExplorerContent() {
                     {sidePanel.upstream.map((node) => (
                       <button
                         key={node.id}
-                        onClick={() => {
-                          handleNodeSelect(node);
-                          graphRef.current?.focusNode(node.id);
-                        }}
-                        className="w-full text-left px-2 py-1.5 rounded hover:bg-white/10 text-sm transition-colors"
+                        onClick={() => handleSelectAnchor(node)}
+                        className="w-full text-left px-2 py-1.5 rounded hover:bg-white/10 text-sm transition-colors flex items-start gap-1.5"
                       >
-                        <span className="text-emerald-400">←</span>{" "}
-                        <span className="text-white/80">{node.name}</span>
+                        <span className="text-emerald-400 flex-shrink-0">←</span>
+                        <span className="text-white/80 break-all">{node.name}</span>
                       </button>
                     ))}
                   </div>
@@ -655,14 +604,11 @@ function ExplorerContent() {
                     {sidePanel.downstream.map((node) => (
                       <button
                         key={node.id}
-                        onClick={() => {
-                          handleNodeSelect(node);
-                          graphRef.current?.focusNode(node.id);
-                        }}
-                        className="w-full text-left px-2 py-1.5 rounded hover:bg-white/10 text-sm transition-colors"
+                        onClick={() => handleSelectAnchor(node)}
+                        className="w-full text-left px-2 py-1.5 rounded hover:bg-white/10 text-sm transition-colors flex items-start gap-1.5"
                       >
-                        <span className="text-cyan-400">→</span>{" "}
-                        <span className="text-white/80">{node.name}</span>
+                        <span className="text-cyan-400 flex-shrink-0">→</span>
+                        <span className="text-white/80 break-all">{node.name}</span>
                       </button>
                     ))}
                   </div>
@@ -676,10 +622,10 @@ function ExplorerContent() {
                     Columns ({sidePanel.node.metadata.columns.length})
                   </h3>
                   <div className="space-y-1 max-h-60 overflow-y-auto font-mono text-xs">
-                    {sidePanel.node.metadata.columns.map((col) => (
+                    {sidePanel.node.metadata.columns.map((col, index) => (
                       <div
-                        key={col.name}
-                        className="flex justify-between py-1 px-2 hover:bg-white/5 rounded cursor-pointer"
+                        key={`${col.name}-${index}`}
+                        className="flex justify-between py-1 px-2 hover:bg-white/5 rounded"
                         title={col.description || undefined}
                       >
                         <span className="text-white/80">{col.name}</span>
@@ -689,71 +635,10 @@ function ExplorerContent() {
                   </div>
                 </div>
               )}
-
-              {/* File Citation */}
-              {sidePanel.node.metadata?.filePath && (
-                <div>
-                  <h3 className="text-sm font-medium text-white/60 mb-2">Source</h3>
-                  <code className="text-xs bg-white/5 px-2 py-1 rounded block break-all">
-                    {sidePanel.node.metadata.filePath}
-                  </code>
-                </div>
-              )}
             </div>
           </div>
         )}
       </div>
-
-      {/* Create Flow Modal */}
-      <CreateFlowModal
-        isOpen={showCreateFlow}
-        onClose={() => setShowCreateFlow(false)}
-        onCreated={(newFlow) => {
-          // Refresh flows
-          fetch("/api/flows")
-            .then((res) => res.json())
-            .then((data) => {
-              setFlows(data.flows);
-              setSelectedFlow(newFlow.id);
-              showToast(`Created flow "${newFlow.name}" with ${newFlow.memberCount} nodes`);
-            });
-        }}
-      />
-
-      {/* Reset Confirmation Modal */}
-      {showResetConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#1a1a24] rounded-xl border border-white/10 p-6 max-w-md w-full mx-4 shadow-2xl">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center">
-                <svg className="w-5 h-5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-semibold">Reset All Data?</h3>
-            </div>
-            <p className="text-white/60 mb-6">
-              This will permanently delete all indexed data, including nodes, edges, flows, groups, and explanations. You will need to re-analyze your pipeline from scratch.
-            </p>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setShowResetConfirm(false)}
-                className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors font-medium"
-                disabled={isResetting}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleReset}
-                disabled={isResetting}
-                className="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-400 text-white transition-colors font-medium disabled:opacity-50"
-              >
-                {isResetting ? "Resetting..." : "Reset All Data"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

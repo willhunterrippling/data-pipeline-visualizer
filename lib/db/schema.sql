@@ -7,6 +7,11 @@ CREATE TABLE IF NOT EXISTS nodes (
     group_id TEXT,                 -- FK to groups
     repo TEXT,                     -- rippling-dbt, airflow-dags, snowflake
     metadata TEXT,                 -- JSON: columns, tags, materialization, schedule
+    layout_x REAL,                 -- Pre-computed X position from dagre
+    layout_y REAL,                 -- Pre-computed Y position from dagre
+    layout_layer INTEGER,          -- Topological layer (depth from sources)
+    semantic_layer TEXT,           -- Semantic classification: source, staging, intermediate, mart, report
+    importance_score REAL,         -- Connectivity-based importance (0-1), higher = better anchor candidate
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -38,6 +43,25 @@ CREATE TABLE IF NOT EXISTS flows (
     member_nodes TEXT,             -- JSON: All nodes in flow
     user_defined INTEGER DEFAULT 0,
     inference_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS layer_names (
+    layer_number INTEGER PRIMARY KEY,  -- The topological layer number
+    name TEXT NOT NULL,                -- AI-generated name like "Lead Enrichment Sources"
+    description TEXT,                  -- Brief description of what's in this layer
+    node_count INTEGER,                -- Number of nodes in this layer
+    sample_nodes TEXT,                 -- JSON: Sample node names for context
+    inference_reason TEXT              -- Why AI chose this name
+);
+
+CREATE TABLE IF NOT EXISTS anchor_candidates (
+    node_id TEXT PRIMARY KEY,          -- FK to nodes
+    importance_score REAL NOT NULL,    -- 0-1, higher = better anchor
+    upstream_count INTEGER,            -- Number of upstream connections
+    downstream_count INTEGER,          -- Number of downstream connections
+    total_connections INTEGER,         -- Total connections
+    reason TEXT,                       -- Why this is a good anchor
+    FOREIGN KEY (node_id) REFERENCES nodes(id)
 );
 
 CREATE TABLE IF NOT EXISTS citations (
@@ -73,6 +97,19 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Lineage cache for frequently-accessed anchors
+CREATE TABLE IF NOT EXISTS lineage_cache (
+    cache_key TEXT PRIMARY KEY,    -- Hash of (anchorId, upstreamDepth, downstreamDepth, flowId)
+    anchor_id TEXT NOT NULL,       -- The anchor node ID for this cache entry
+    upstream_depth INTEGER NOT NULL,
+    downstream_depth INTEGER NOT NULL,
+    flow_id TEXT,                  -- NULL if no flow filter
+    result TEXT NOT NULL,          -- JSON: Serialized LineageResponse
+    created_at TEXT DEFAULT (datetime('now')),
+    access_count INTEGER DEFAULT 1,
+    last_accessed TEXT DEFAULT (datetime('now'))
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);
 CREATE INDEX IF NOT EXISTS idx_nodes_group ON nodes(group_id);
@@ -82,6 +119,8 @@ CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_node);
 CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type);
 CREATE INDEX IF NOT EXISTS idx_citations_node ON citations(node_id);
 CREATE INDEX IF NOT EXISTS idx_citations_edge ON citations(edge_id);
+CREATE INDEX IF NOT EXISTS idx_lineage_cache_anchor ON lineage_cache(anchor_id);
+CREATE INDEX IF NOT EXISTS idx_lineage_cache_access ON lineage_cache(access_count DESC);
 
 -- Full-text search for nodes
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(

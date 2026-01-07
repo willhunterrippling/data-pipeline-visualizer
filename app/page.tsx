@@ -286,6 +286,19 @@ export default function Home() {
           </div>
         )}
 
+        {/* Waiting for status (gap state - jobId set but jobStatus not yet received) */}
+        {jobId && !jobStatus && (
+          <div className="text-center space-y-8">
+            <div className="space-y-2">
+              <h2 className="text-2xl font-semibold">Starting Build...</h2>
+              <p className="text-white/60">Initializing indexer</p>
+            </div>
+            <div className="flex justify-center">
+              <div className="w-8 h-8 border-2 border-white/20 border-t-emerald-500 rounded-full animate-spin" />
+            </div>
+          </div>
+        )}
+
         {/* Progress Section */}
         {jobStatus && jobStatus.status !== "completed" && (
           <div className="space-y-8">

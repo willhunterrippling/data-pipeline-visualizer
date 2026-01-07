@@ -21,6 +21,9 @@ export async function GET(request: NextRequest) {
       groupId: n.group_id || undefined,
       repo: n.repo || undefined,
       metadata: n.metadata ? (JSON.parse(n.metadata) as NodeMetadata) : undefined,
+      layoutX: n.layout_x ?? undefined,
+      layoutY: n.layout_y ?? undefined,
+      layoutLayer: n.layout_layer ?? undefined,
     }));
 
     const edges: GraphEdge[] = dbEdges.map((e) => ({

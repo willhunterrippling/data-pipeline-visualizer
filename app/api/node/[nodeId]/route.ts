@@ -34,6 +34,9 @@ export async function GET(
       groupId: dbNode.group_id || undefined,
       repo: dbNode.repo || undefined,
       metadata: dbNode.metadata ? (JSON.parse(dbNode.metadata) as NodeMetadata) : undefined,
+      layoutX: dbNode.layout_x ?? undefined,
+      layoutY: dbNode.layout_y ?? undefined,
+      layoutLayer: dbNode.layout_layer ?? undefined,
     };
 
     const citations: Citation[] = dbCitations.map((c) => ({

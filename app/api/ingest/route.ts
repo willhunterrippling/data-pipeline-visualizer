@@ -24,10 +24,13 @@ export async function POST() {
     config.airflowPath = config.airflowPath.replace("~", process.env.HOME || "");
   }
 
-  // Start indexing in background (don't await)
+  // Start indexing in background using setImmediate to break Promise chain
+  // This allows the HTTP response to be sent before the indexer starts
   const indexer = new Indexer(jobId, config);
-  indexer.run().catch((error) => {
-    console.error("Indexing failed:", error);
+  setImmediate(() => {
+    indexer.run().catch((error) => {
+      console.error("Indexing failed:", error);
+    });
   });
 
   return NextResponse.json({ jobId });

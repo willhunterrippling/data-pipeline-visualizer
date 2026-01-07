@@ -23,6 +23,21 @@ function initSchema(db: Database.Database) {
   const schemaPath = join(process.cwd(), "lib/db/schema.sql");
   const schema = readFileSync(schemaPath, "utf-8");
   db.exec(schema);
+  
+  // Migration: Add missing columns to nodes table if they don't exist
+  const existingCols = db.prepare("PRAGMA table_info(nodes)").all() as Array<{name:string}>;
+  const colNames = new Set(existingCols.map(c => c.name));
+  
+  const missingCols: Array<{name: string; type: string}> = [];
+  if (!colNames.has('layout_x')) missingCols.push({ name: 'layout_x', type: 'REAL' });
+  if (!colNames.has('layout_y')) missingCols.push({ name: 'layout_y', type: 'REAL' });
+  if (!colNames.has('layout_layer')) missingCols.push({ name: 'layout_layer', type: 'INTEGER' });
+  if (!colNames.has('semantic_layer')) missingCols.push({ name: 'semantic_layer', type: 'TEXT' });
+  if (!colNames.has('importance_score')) missingCols.push({ name: 'importance_score', type: 'REAL' });
+  
+  for (const col of missingCols) {
+    db.exec(`ALTER TABLE nodes ADD COLUMN ${col.name} ${col.type}`);
+  }
 }
 
 export function closeDb() {
@@ -41,7 +56,30 @@ export interface DbNode {
   group_id: string | null;
   repo: string | null;
   metadata: string | null;
+  layout_x: number | null;
+  layout_y: number | null;
+  layout_layer: number | null;
+  semantic_layer: string | null;
+  importance_score: number | null;
   created_at: string;
+}
+
+export interface DbLayerName {
+  layer_number: number;
+  name: string;
+  description: string | null;
+  node_count: number | null;
+  sample_nodes: string | null;
+  inference_reason: string | null;
+}
+
+export interface DbAnchorCandidate {
+  node_id: string;
+  importance_score: number;
+  upstream_count: number;
+  downstream_count: number;
+  total_connections: number;
+  reason: string | null;
 }
 
 export interface DbEdge {
@@ -213,6 +251,97 @@ export function updateGroupNodeCounts() {
       SELECT COUNT(*) FROM nodes WHERE nodes.group_id = groups.id
     )
   `);
+}
+
+// Layout operations
+export interface LayoutPosition {
+  nodeId: string;
+  x: number;
+  y: number;
+  layer: number;
+}
+
+export function updateNodeLayouts(positions: LayoutPosition[]) {
+  const db = getDb();
+  const stmt = db.prepare(`
+    UPDATE nodes SET layout_x = ?, layout_y = ?, layout_layer = ? WHERE id = ?
+  `);
+  const updateMany = db.transaction((items: LayoutPosition[]) => {
+    for (const pos of items) {
+      stmt.run(pos.x, pos.y, pos.layer, pos.nodeId);
+    }
+  });
+  updateMany(positions);
+}
+
+export function getNodesWithLayout(): DbNode[] {
+  const db = getDb();
+  return db.prepare("SELECT * FROM nodes WHERE layout_x IS NOT NULL").all() as DbNode[];
+}
+
+// Semantic layer and importance operations
+export function updateNodeSemanticLayers(updates: Array<{ nodeId: string; semanticLayer: string }>) {
+  const db = getDb();
+  const stmt = db.prepare(`UPDATE nodes SET semantic_layer = ? WHERE id = ?`);
+  const updateMany = db.transaction((items: typeof updates) => {
+    for (const item of items) {
+      stmt.run(item.semanticLayer, item.nodeId);
+    }
+  });
+  updateMany(updates);
+}
+
+export function updateNodeImportanceScores(updates: Array<{ nodeId: string; importanceScore: number }>) {
+  const db = getDb();
+  const stmt = db.prepare(`UPDATE nodes SET importance_score = ? WHERE id = ?`);
+  const updateMany = db.transaction((items: typeof updates) => {
+    for (const item of items) {
+      stmt.run(item.importanceScore, item.nodeId);
+    }
+  });
+  updateMany(updates);
+}
+
+// Layer name operations
+export function insertLayerNames(layerNames: DbLayerName[]) {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO layer_names (layer_number, name, description, node_count, sample_nodes, inference_reason)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const insertMany = db.transaction((items: DbLayerName[]) => {
+    for (const ln of items) {
+      stmt.run(ln.layer_number, ln.name, ln.description, ln.node_count, ln.sample_nodes, ln.inference_reason);
+    }
+  });
+  insertMany(layerNames);
+}
+
+export function getLayerNames(): DbLayerName[] {
+  const db = getDb();
+  return db.prepare("SELECT * FROM layer_names ORDER BY layer_number").all() as DbLayerName[];
+}
+
+// Anchor candidate operations
+export function insertAnchorCandidates(candidates: DbAnchorCandidate[]) {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO anchor_candidates (node_id, importance_score, upstream_count, downstream_count, total_connections, reason)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const insertMany = db.transaction((items: DbAnchorCandidate[]) => {
+    for (const c of items) {
+      stmt.run(c.node_id, c.importance_score, c.upstream_count, c.downstream_count, c.total_connections, c.reason);
+    }
+  });
+  insertMany(candidates);
+}
+
+export function getAnchorCandidates(limit = 20): DbAnchorCandidate[] {
+  const db = getDb();
+  return db.prepare(
+    "SELECT * FROM anchor_candidates ORDER BY importance_score DESC LIMIT ?"
+  ).all(limit) as DbAnchorCandidate[];
 }
 
 // Flow operations
@@ -415,6 +544,156 @@ export function clearAllData() {
     DELETE FROM groups;
     DELETE FROM edges;
     DELETE FROM nodes;
+    DELETE FROM lineage_cache;
+    DELETE FROM layer_names;
+    DELETE FROM anchor_candidates;
   `);
+}
+
+// ============================================================================
+// Lineage Cache Operations
+// ============================================================================
+
+export interface DbLineageCache {
+  cache_key: string;
+  anchor_id: string;
+  upstream_depth: number;
+  downstream_depth: number;
+  flow_id: string | null;
+  result: string;
+  created_at: string;
+  access_count: number;
+  last_accessed: string;
+}
+
+const LINEAGE_CACHE_MAX_ENTRIES = 1000;
+
+/**
+ * Generate a cache key for lineage query parameters.
+ */
+export function generateLineageCacheKey(
+  anchorId: string,
+  upstreamDepth: number,
+  downstreamDepth: number,
+  flowId: string | null
+): string {
+  // Simple hash function - good enough for cache keys
+  const input = `${anchorId}|${upstreamDepth}|${downstreamDepth}|${flowId || "null"}`;
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    const char = input.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return `lc_${Math.abs(hash).toString(16)}`;
+}
+
+/**
+ * Get cached lineage result if available.
+ * Returns null if not cached.
+ */
+export function getLineageCache(cacheKey: string): DbLineageCache | null {
+  const db = getDb();
+  const cached = db.prepare("SELECT * FROM lineage_cache WHERE cache_key = ?").get(cacheKey) as DbLineageCache | undefined;
+  
+  if (cached) {
+    // Update access stats
+    db.prepare(`
+      UPDATE lineage_cache 
+      SET access_count = access_count + 1, last_accessed = datetime('now') 
+      WHERE cache_key = ?
+    `).run(cacheKey);
+    return cached;
+  }
+  
+  return null;
+}
+
+/**
+ * Store lineage result in cache.
+ * Implements LRU eviction when cache is full.
+ */
+export function setLineageCache(
+  cacheKey: string,
+  anchorId: string,
+  upstreamDepth: number,
+  downstreamDepth: number,
+  flowId: string | null,
+  result: string
+): void {
+  const db = getDb();
+  
+  // Check current cache size
+  const countResult = db.prepare("SELECT COUNT(*) as count FROM lineage_cache").get() as { count: number };
+  
+  // Evict LRU entries if at capacity
+  if (countResult.count >= LINEAGE_CACHE_MAX_ENTRIES) {
+    const toEvict = Math.floor(LINEAGE_CACHE_MAX_ENTRIES * 0.1); // Evict 10%
+    db.prepare(`
+      DELETE FROM lineage_cache 
+      WHERE cache_key IN (
+        SELECT cache_key FROM lineage_cache 
+        ORDER BY last_accessed ASC 
+        LIMIT ?
+      )
+    `).run(toEvict);
+  }
+  
+  // Insert or replace cache entry
+  db.prepare(`
+    INSERT OR REPLACE INTO lineage_cache 
+    (cache_key, anchor_id, upstream_depth, downstream_depth, flow_id, result, access_count, last_accessed)
+    VALUES (?, ?, ?, ?, ?, ?, 1, datetime('now'))
+  `).run(cacheKey, anchorId, upstreamDepth, downstreamDepth, flowId, result);
+}
+
+/**
+ * Clear all lineage cache entries.
+ * Called during re-indexing when graph structure changes.
+ */
+export function clearLineageCache(): void {
+  const db = getDb();
+  db.exec("DELETE FROM lineage_cache");
+}
+
+/**
+ * Clear cache entries for a specific anchor node.
+ * Useful when a specific node is updated.
+ */
+export function clearLineageCacheForAnchor(anchorId: string): void {
+  const db = getDb();
+  db.prepare("DELETE FROM lineage_cache WHERE anchor_id = ?").run(anchorId);
+}
+
+/**
+ * Get cache statistics for monitoring.
+ */
+export function getLineageCacheStats(): {
+  totalEntries: number;
+  totalHits: number;
+  topAnchors: Array<{ anchorId: string; hitCount: number }>;
+} {
+  const db = getDb();
+  
+  const stats = db.prepare(`
+    SELECT 
+      COUNT(*) as total_entries,
+      SUM(access_count) as total_hits
+    FROM lineage_cache
+  `).get() as { total_entries: number; total_hits: number };
+  
+  const topAnchors = db.prepare(`
+    SELECT anchor_id, SUM(access_count) as hit_count
+    FROM lineage_cache
+    GROUP BY anchor_id
+    ORDER BY hit_count DESC
+    LIMIT 10
+  `).all() as Array<{ anchor_id: string; hit_count: number }>;
+  
+  return {
+    totalEntries: stats.total_entries || 0,
+    totalHits: stats.total_hits || 0,
+    topAnchors: topAnchors.map(a => ({ anchorId: a.anchor_id, hitCount: a.hit_count })),
+  };
 }
 

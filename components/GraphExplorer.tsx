@@ -7,11 +7,28 @@ import {
   useCallback,
   useImperativeHandle,
   forwardRef,
+  useMemo,
 } from "react";
 import cytoscape, { Core, NodeSingular } from "cytoscape";
 import type { GraphNode, GraphEdge } from "@/lib/types";
 import type { VisibilityReason } from "@/lib/graph/visibility";
 import type { SmartLayerName } from "@/lib/graph/layout";
+
+// Layout constants for computing positions client-side
+const CLIENT_LAYOUT_CONFIG = {
+  nodeSep: 60,      // Vertical spacing between nodes in same layer
+  rankSep: 200,     // Horizontal spacing between layers
+  marginX: 50,
+  marginY: 50,
+  nodeHeight: 50,
+};
+
+// Cached position for a node
+interface CachedPosition {
+  x: number;
+  y: number;
+  relativeLayer: number;
+}
 
 export interface GraphExplorerRef {
   focusNode: (nodeId: string) => void;
@@ -100,6 +117,21 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
     const containerRef = useRef<HTMLDivElement>(null);
     const cyRef = useRef<Core | null>(null);
     const swimlaneCanvasRef = useRef<HTMLCanvasElement>(null);
+    
+    // Position cache to preserve node positions across updates
+    const positionCacheRef = useRef<Map<string, CachedPosition>>(new Map());
+    // Track selected node to restore selection after updates
+    const selectedNodeIdRef = useRef<string | null>(null);
+    // Track anchor to clear cache when it changes
+    const prevAnchorIdRef = useRef<string | null | undefined>(anchorId);
+    
+    // Clear position cache when anchor changes (new exploration starting point)
+    useEffect(() => {
+      if (anchorId !== prevAnchorIdRef.current) {
+        positionCacheRef.current.clear();
+        prevAnchorIdRef.current = anchorId;
+      }
+    }, [anchorId]);
 
     // Keep refs for stable access in event handlers
     const nodesRef = useRef(nodes);
@@ -117,6 +149,129 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       onNodeDoubleClickRef.current = onNodeDoubleClick;
       onGhostNodeClickRef.current = onGhostNodeClick;
     }, [nodes, ghostNodes, smartLayerNames, onNodeSelect, onNodeDoubleClick, onGhostNodeClick]);
+
+    // Compute stable positions: preserve existing positions, only compute for truly new nodes
+    // Priority: 1) Cached position at same layer, 2) Server-provided position, 3) Compute new position
+    const computeStablePositions = useCallback((
+      nodeList: VisibleNode[],
+      cache: Map<string, CachedPosition>,
+      edgeList: GraphEdge[]
+    ): Map<string, { x: number; y: number }> => {
+      const positions = new Map<string, { x: number; y: number }>();
+      
+      // Group nodes by relativeLayer for computing truly new positions
+      const nodesByLayer = new Map<number, VisibleNode[]>();
+      const trulyNewNodesByLayer = new Map<number, VisibleNode[]>();
+      
+      for (const node of nodeList) {
+        const layer = node.relativeLayer;
+        if (!nodesByLayer.has(layer)) {
+          nodesByLayer.set(layer, []);
+          trulyNewNodesByLayer.set(layer, []);
+        }
+        nodesByLayer.get(layer)!.push(node);
+        
+        // Priority 1: Check if we have a cached position (regardless of layer change)
+        // When stretching exploration, layers shift but we want to preserve visual positions
+        const cached = cache.get(node.id);
+        if (cached) {
+          // Use cached position - this preserves positions across updates even when layer changes
+          positions.set(node.id, { x: cached.x, y: cached.y });
+        } 
+        // Priority 2: New node - needs computed position (ignore server position as it conflicts with cached layout)
+        else {
+          trulyNewNodesByLayer.get(layer)!.push(node);
+        }
+      }
+      
+      // Find the range of X positions from existing cached nodes to position new nodes relative to them
+      let minExistingX = Infinity;
+      let maxExistingX = -Infinity;
+      for (const pos of positions.values()) {
+        minExistingX = Math.min(minExistingX, pos.x);
+        maxExistingX = Math.max(maxExistingX, pos.x);
+      }
+      if (minExistingX === Infinity) minExistingX = CLIENT_LAYOUT_CONFIG.marginX;
+      if (maxExistingX === -Infinity) maxExistingX = CLIENT_LAYOUT_CONFIG.marginX;
+      
+      // For each layer, compute positions for truly new nodes
+      // Place them to the LEFT (upstream) or RIGHT (downstream) of existing nodes
+      for (const [layer, newNodes] of trulyNewNodesByLayer) {
+        if (newNodes.length === 0) continue;
+        
+        // Find existing Y positions in this layer
+        const existingYs: number[] = [];
+        for (const node of nodesByLayer.get(layer)!) {
+          const pos = positions.get(node.id);
+          if (pos) {
+            existingYs.push(pos.y);
+          }
+        }
+        
+        // Sort new nodes alphabetically for consistent ordering
+        newNodes.sort((a, b) => a.name.localeCompare(b.name));
+        
+        // Compute X position: place new nodes to the left of existing for upstream (negative layer)
+        // or to the right for downstream (positive layer)
+        let layoutX: number;
+        
+        if (layer < 0) {
+          // Upstream: place to the LEFT of minimum existing X
+          layoutX = minExistingX - CLIENT_LAYOUT_CONFIG.rankSep;
+        } else if (layer > 0) {
+          // Downstream: place to the RIGHT of maximum existing X  
+          layoutX = maxExistingX + CLIENT_LAYOUT_CONFIG.rankSep;
+        } else {
+          // Anchor layer: use existing position or compute
+          layoutX = CLIENT_LAYOUT_CONFIG.marginX;
+        }
+        
+        // Build edge lookup for finding connected nodes
+        const nodeConnections = new Map<string, string[]>();
+        for (const edge of edgeList) {
+          // For upstream nodes (layer < 0), we want to find what this node flows TO
+          // For downstream nodes (layer > 0), we want to find what flows TO this node
+          if (!nodeConnections.has(edge.from)) nodeConnections.set(edge.from, []);
+          if (!nodeConnections.has(edge.to)) nodeConnections.set(edge.to, []);
+          nodeConnections.get(edge.from)!.push(edge.to);
+          nodeConnections.get(edge.to)!.push(edge.from);
+        }
+        
+        // Compute Y positions for new nodes based on their connected node's Y position
+        // Track used Y positions in this layer to avoid stacking
+        const usedYPositions = new Set<number>(existingYs);
+        let fallbackY = CLIENT_LAYOUT_CONFIG.marginY;
+        if (existingYs.length > 0) {
+          fallbackY = Math.max(...existingYs) + CLIENT_LAYOUT_CONFIG.nodeHeight + CLIENT_LAYOUT_CONFIG.nodeSep;
+        }
+        
+        for (const node of newNodes) {
+          // Find the connected node that already has a position
+          const connectedIds = nodeConnections.get(node.id) || [];
+          let nodeY = fallbackY;
+          
+          for (const connectedId of connectedIds) {
+            const connectedPos = positions.get(connectedId);
+            if (connectedPos) {
+              // Try to use the connected node's Y position if not already taken
+              let candidateY = connectedPos.y;
+              while (usedYPositions.has(candidateY)) {
+                candidateY += CLIENT_LAYOUT_CONFIG.nodeHeight + CLIENT_LAYOUT_CONFIG.nodeSep;
+              }
+              nodeY = candidateY;
+              break;
+            }
+          }
+          
+          usedYPositions.add(nodeY);
+          positions.set(node.id, { x: layoutX, y: nodeY });
+          cache.set(node.id, { x: layoutX, y: nodeY, relativeLayer: layer });
+          fallbackY = Math.max(fallbackY, nodeY + CLIENT_LAYOUT_CONFIG.nodeHeight + CLIENT_LAYOUT_CONFIG.nodeSep);
+        }
+      }
+      
+      return positions;
+    }, []); // No dependencies
 
     // Expose methods to parent
     useImperativeHandle(ref, () => ({
@@ -153,17 +308,26 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       },
     }));
 
-    // Build Cytoscape elements using pre-computed positions
+    // Compute stable positions for all nodes
+    const stablePositions = useMemo(() => {
+      const allNodes = [...nodes, ...ghostNodes];
+      return computeStablePositions(allNodes, positionCacheRef.current, edges);
+    }, [nodes, ghostNodes, edges, computeStablePositions]);
+
+    // Build Cytoscape elements using stable cached positions
     const buildElements = useCallback(() => {
       const elements: cytoscape.ElementDefinition[] = [];
 
-      // Add visible nodes with pre-computed positions
+      // Add visible nodes with stable positions
       for (const node of nodes) {
         const colors = NODE_COLORS[node.type] || NODE_COLORS.model;
         const isAnchor = node.id === anchorId;
         
         // Break label at __ for multi-line display
         const label = node.name.replace(/__/g, '\n');
+        
+        // Use stable position from cache, fallback to server position
+        const pos = stablePositions.get(node.id) || { x: node.layoutX ?? 0, y: node.layoutY ?? 0 };
 
         elements.push({
           data: {
@@ -176,8 +340,8 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
             ...colors,
           },
           position: {
-            x: node.layoutX ?? 0,
-            y: node.layoutY ?? 0,
+            x: pos.x,
+            y: pos.y,
           },
           classes: `node-${node.type}${isAnchor ? " anchor-node" : ""}`,
         });
@@ -189,6 +353,9 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         
         // Break label at __ for multi-line display
         const label = node.name.replace(/__/g, '\n');
+        
+        // Use stable position from cache, fallback to server position
+        const pos = stablePositions.get(node.id) || { x: node.layoutX ?? 0, y: node.layoutY ?? 0 };
 
         elements.push({
           data: {
@@ -201,8 +368,8 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
             ...colors,
           },
           position: {
-            x: node.layoutX ?? 0,
-            y: node.layoutY ?? 0,
+            x: pos.x,
+            y: pos.y,
           },
           classes: "node-ghost",
         });
@@ -229,7 +396,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       }
 
       return elements;
-    }, [nodes, edges, ghostNodes, anchorId]);
+    }, [nodes, edges, ghostNodes, anchorId, stablePositions]);
 
     // Draw swimlane backgrounds
     const drawSwimlanes = useCallback(() => {
@@ -362,7 +529,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
               "text-outline-width": 1,
             },
           },
-          // Anchor node (selected) - distinct with moderate glow
+          // Anchor node - purple with moderate glow
           {
             selector: ".anchor-node",
             style: {
@@ -420,12 +587,16 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
               "line-style": "dashed",
             },
           },
-          // Selected node
+          // Selected/viewed node - red with glow (but not anchor)
           {
-            selector: "node:selected",
+            selector: "node:selected:not(.anchor-node)",
             style: {
               "border-width": 3,
-              "border-color": "#ffffff",
+              "border-color": "#f87171",
+              "underlay-color": "#ef4444",
+              "underlay-padding": 8,
+              "underlay-opacity": 0.3,
+              "underlay-shape": "round-rectangle",
             },
           },
           // Highlighted nodes
@@ -472,6 +643,10 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         const node = evt.target as NodeSingular;
         const currentNodes = nodesRef.current;
         const nodeData = currentNodes.find((n) => n.id === node.id());
+        
+        // Track selected node ID for restoration after updates
+        selectedNodeIdRef.current = node.id();
+        
         onNodeSelectRef.current?.(nodeData || null);
 
         // Highlight neighborhood
@@ -502,6 +677,8 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
 
       cy.on("tap", (evt) => {
         if (evt.target === cy) {
+          // Clear tracked selection
+          selectedNodeIdRef.current = null;
           onNodeSelectRef.current?.(null);
           cy.elements().removeClass("highlighted dimmed");
         }
@@ -547,38 +724,182 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         requestAnimationFrame(drawSwimlanes);
       });
 
-      // Initial swimlane draw after layout settles
-      setTimeout(() => {
-        drawSwimlanes();
-        // Fit to content
-        cy.fit(undefined, 50);
-      }, 100);
-
       cyRef.current = cy;
 
+      // Initial swimlane draw after layout settles
+      const initTimeout = setTimeout(() => {
+        if (cyRef.current) {
+          drawSwimlanes();
+          // Fit to content
+          cyRef.current.fit(undefined, 50);
+        }
+      }, 100);
+
       return () => {
+        clearTimeout(initTimeout);
         tooltip.remove();
         cy.destroy();
+        cyRef.current = null;
       };
     }, []); // Only run once on mount
 
-    // Update elements when data changes
+    // Update elements incrementally when data changes
     useEffect(() => {
       if (!cyRef.current) return;
 
       const cy = cyRef.current;
-      const elements = buildElements();
-
-      // Batch update: remove old, add new
-      cy.elements().remove();
-      cy.add(elements);
-
-      // No layout needed - positions are pre-computed
-      // Just redraw swimlanes
+      const newElements = buildElements();
+      
+      // Capture current selected node before updating
+      const selectedNodes = cy.nodes(":selected");
+      const wasSelectedId = selectedNodes.length > 0 ? selectedNodes[0].id() : selectedNodeIdRef.current;
+      
+      // Build maps of current and new elements
+      const currentNodeIds = new Set<string>();
+      const currentEdgeIds = new Set<string>();
+      cy.nodes().forEach(n => currentNodeIds.add(n.id()));
+      cy.edges().forEach(e => currentEdgeIds.add(e.id()));
+      
+      const newNodeMap = new Map<string, cytoscape.ElementDefinition>();
+      const newEdgeMap = new Map<string, cytoscape.ElementDefinition>();
+      const newNodeIds = new Set<string>();
+      const newEdgeIds = new Set<string>();
+      
+      for (const el of newElements) {
+        if (el.data.source && el.data.target) {
+          // It's an edge
+          newEdgeMap.set(el.data.id, el);
+          newEdgeIds.add(el.data.id);
+        } else {
+          // It's a node
+          newNodeMap.set(el.data.id, el);
+          newNodeIds.add(el.data.id);
+        }
+      }
+      
+      // Find nodes to remove, add, and update
+      const nodesToRemove: string[] = [];
+      const nodesToAdd: cytoscape.ElementDefinition[] = [];
+      const nodesToUpdate: cytoscape.ElementDefinition[] = [];
+      const addedNodeIds: string[] = [];
+      
+      // Check for nodes to remove
+      for (const id of currentNodeIds) {
+        if (!newNodeIds.has(id)) {
+          nodesToRemove.push(id);
+        }
+      }
+      
+      // Check for nodes to add or update
+      for (const [id, el] of newNodeMap) {
+        if (!currentNodeIds.has(id)) {
+          nodesToAdd.push(el);
+          addedNodeIds.push(id);
+        } else {
+          nodesToUpdate.push(el);
+        }
+      }
+      
+      // Find edges to remove and add
+      const edgesToRemove: string[] = [];
+      const edgesToAdd: cytoscape.ElementDefinition[] = [];
+      
+      for (const id of currentEdgeIds) {
+        if (!newEdgeIds.has(id)) {
+          edgesToRemove.push(id);
+        }
+      }
+      
+      for (const [id, el] of newEdgeMap) {
+        if (!currentEdgeIds.has(id)) {
+          edgesToAdd.push(el);
+        }
+      }
+      
+      // Perform batch update
+      cy.batch(() => {
+        // Remove old elements
+        for (const id of nodesToRemove) {
+          cy.getElementById(id).remove();
+        }
+        for (const id of edgesToRemove) {
+          cy.getElementById(id).remove();
+        }
+        
+        // Add new elements
+        cy.add([...nodesToAdd, ...edgesToAdd]);
+        
+        // Update existing node positions (they may have moved)
+        for (const el of nodesToUpdate) {
+          const node = cy.getElementById(el.data.id);
+          if (node.length > 0 && el.position) {
+            node.position(el.position);
+          }
+        }
+      });
+      
+      // Restore selection if the node still exists
+      if (wasSelectedId && newNodeIds.has(wasSelectedId)) {
+        const nodeToSelect = cy.getElementById(wasSelectedId);
+        if (nodeToSelect.length > 0) {
+          nodeToSelect.select();
+          // Re-apply highlighting
+          cy.elements().removeClass("highlighted dimmed");
+          const neighborhood = nodeToSelect.closedNeighborhood();
+          cy.elements().addClass("dimmed");
+          neighborhood.removeClass("dimmed").addClass("highlighted");
+        }
+      }
+      
+      // Redraw swimlanes
       requestAnimationFrame(drawSwimlanes);
-
-      // Fit to new content with animation
-      cy.animate({ fit: { eles: cy.elements(), padding: 50 } }, { duration: 300 });
+      
+      // Smart pan: if new nodes were added, pan to include them without refitting everything
+      if (addedNodeIds.length > 0 && nodesToRemove.length === 0) {
+        // Get bounding box of new nodes
+        const addedNodes = cy.nodes().filter(n => addedNodeIds.includes(n.id()));
+        if (addedNodes.length > 0) {
+          const bb = addedNodes.boundingBox({});
+          const viewport = {
+            x1: -cy.pan().x / cy.zoom(),
+            y1: -cy.pan().y / cy.zoom(),
+            x2: (-cy.pan().x + cy.width()) / cy.zoom(),
+            y2: (-cy.pan().y + cy.height()) / cy.zoom(),
+          };
+          
+          // Check if new nodes are outside viewport
+          const outsideLeft = bb.x1 < viewport.x1;
+          const outsideRight = bb.x2 > viewport.x2;
+          const outsideTop = bb.y1 < viewport.y1;
+          const outsideBottom = bb.y2 > viewport.y2;
+          
+          if (outsideLeft || outsideRight || outsideTop || outsideBottom) {
+            // Pan to include new nodes with some padding
+            let panX = cy.pan().x;
+            let panY = cy.pan().y;
+            const padding = 100 * cy.zoom();
+            
+            if (outsideLeft) {
+              panX = -(bb.x1 * cy.zoom()) + padding;
+            } else if (outsideRight) {
+              panX = cy.width() - (bb.x2 * cy.zoom()) - padding;
+            }
+            
+            if (outsideTop) {
+              panY = -(bb.y1 * cy.zoom()) + padding;
+            } else if (outsideBottom) {
+              panY = cy.height() - (bb.y2 * cy.zoom()) - padding;
+            }
+            
+            cy.animate({
+              pan: { x: panX, y: panY }
+            }, { duration: 300 });
+          }
+        }
+      } else if (cy.nodes().length > 0 && currentNodeIds.size === 0) {
+        // Initial load - fit to content
+        cy.fit(undefined, 50);
+      }
     }, [buildElements, drawSwimlanes]);
 
     // Zoom controls
@@ -664,6 +985,17 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
             <span className="text-purple-300">Anchor</span>
           </div>
           <div className="flex items-center gap-2">
+            <div 
+              className="w-3 h-3 rounded border-2" 
+              style={{ 
+                backgroundColor: "#1e4035", 
+                borderColor: "#f87171",
+                boxShadow: "0 0 6px 2px rgba(239, 68, 68, 0.4)"
+              }} 
+            />
+            <span className="text-red-300">Selected</span>
+          </div>
+          <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded border border-dashed border-white/40 opacity-40" />
             <span className="text-white/70">Ghost (outside flow)</span>
           </div>
@@ -681,3 +1013,4 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
 );
 
 export default GraphExplorer;
+

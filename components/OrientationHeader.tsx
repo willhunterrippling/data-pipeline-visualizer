@@ -4,6 +4,7 @@ import type { GraphNode, GraphFlow } from "@/lib/types";
 
 interface OrientationHeaderProps {
   anchor: GraphNode | null;
+  selectedNode?: GraphNode | null;  // Currently selected/viewed node
   flow: GraphFlow | null;
   stats?: {
     visibleNodes: number;
@@ -14,16 +15,19 @@ interface OrientationHeaderProps {
   onClearFlow?: () => void;
   onAnchorClick?: () => void;
   onFlowClick?: () => void;
+  onSelectedClick?: () => void;
 }
 
 export default function OrientationHeader({
   anchor,
+  selectedNode,
   flow,
   stats,
   onClearAnchor,
   onClearFlow,
   onAnchorClick,
   onFlowClick,
+  onSelectedClick,
 }: OrientationHeaderProps) {
   // Empty state
   if (!anchor && !flow) {
@@ -36,21 +40,33 @@ export default function OrientationHeader({
     );
   }
 
+  // Determine what we're "viewing" - selected node if set, otherwise anchor
+  const viewingNode = selectedNode || anchor;
+  const isViewingAnchor = !selectedNode || selectedNode.id === anchor?.id;
+
   return (
     <div className="px-4 py-2 bg-[#12121a] border-b border-white/10 flex items-center justify-between">
       <div className="flex items-center gap-2 text-sm">
         <span className="text-white/50">You are viewing:</span>
 
-        {/* Anchor badge */}
-        {anchor && (
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-purple-500/20 border border-purple-500/30">
+        {/* Currently viewed node badge - purple for anchor, red for other selected nodes */}
+        {viewingNode && (
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md ${
+            isViewingAnchor 
+              ? "bg-purple-500/20 border border-purple-500/30" 
+              : "bg-red-500/20 border border-red-500/30"
+          }`}>
             <button
-              onClick={onAnchorClick}
-              className="text-purple-300 hover:text-purple-200 font-medium transition-colors"
+              onClick={isViewingAnchor ? onAnchorClick : onSelectedClick}
+              className={`font-medium transition-colors ${
+                isViewingAnchor 
+                  ? "text-purple-300 hover:text-purple-200" 
+                  : "text-red-300 hover:text-red-200"
+              }`}
             >
-              {anchor.name}
+              {viewingNode.name}
             </button>
-            {onClearAnchor && (
+            {isViewingAnchor && onClearAnchor && (
               <button
                 onClick={onClearAnchor}
                 className="text-purple-300/60 hover:text-purple-200 transition-colors"
@@ -90,8 +106,8 @@ export default function OrientationHeader({
           </>
         )}
 
-        {/* Global indicator when no flow */}
-        {anchor && !flow && (
+        {/* Global indicator when no flow and viewing anchor */}
+        {isViewingAnchor && anchor && !flow && (
           <>
             <span className="text-white/40">—</span>
             <span className="text-white/40 text-xs">(Global lineage)</span>

@@ -521,11 +521,13 @@ function ExplorerContent() {
       {/* Orientation Header */}
       <OrientationHeader
         anchor={anchorNode || null}
+        selectedNode={sidePanel?.node || null}
         flow={currentFlow || null}
         stats={lineageData?.stats}
         onClearAnchor={anchorId ? handleClearAnchor : undefined}
         onClearFlow={flowId ? handleClearFlow : undefined}
         onAnchorClick={() => anchorId && graphRef.current?.centerOnAnchor()}
+        onSelectedClick={() => sidePanel?.node && graphRef.current?.focusNode(sidePanel.node.id)}
       />
 
       {/* Main content */}

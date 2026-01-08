@@ -43,5 +43,7 @@ next-env.d.ts
 
 .cursor
 
-# data
+# data (SQLite database - local only)
 /data
+
+# Note: public/graph-data.json is NOT ignored - it should be committed for Vercel deployment

@@ -472,7 +472,10 @@ function ExplorerContent() {
         const nodeId = action.payload.nodeId;
         const node = allNodes.find((n) => n.id === nodeId);
         if (node) {
+          // Clear the current flow to show "All Nodes" view
+          setFlowId(null);
           handleSelectAnchor(node);
+          updateUrl(nodeId, null);
         }
         break;
       }

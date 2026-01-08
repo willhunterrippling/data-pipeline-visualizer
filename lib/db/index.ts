@@ -1,3 +1,25 @@
+// ============================================================================
+// Environment Detection - Use static adapter on Vercel, SQLite locally
+// ============================================================================
+
+const USE_STATIC_MODE =
+  process.env.USE_STATIC_DATA === "true" ||
+  process.env.VERCEL === "1" ||
+  process.env.NEXT_RUNTIME === "edge";
+
+// Re-export from static adapter if in static mode
+// This must be at the top level for tree-shaking to work
+if (USE_STATIC_MODE) {
+  // Dynamic re-export for static mode
+  module.exports = require("./static-adapter");
+} else {
+  // Continue with SQLite implementation below
+}
+
+// ============================================================================
+// SQLite Implementation (used in local development)
+// ============================================================================
+
 import Database from "better-sqlite3";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -9,6 +31,9 @@ const DB_PATH = process.env.DATABASE_PATH || join(process.cwd(), "data/pipeline.
 const globalForDb = globalThis as unknown as { pipelineDb: Database.Database | undefined };
 
 export function getDb(): Database.Database {
+  if (USE_STATIC_MODE) {
+    throw new Error("getDb() is not available in static mode");
+  }
   if (!globalForDb.pipelineDb) {
     globalForDb.pipelineDb = new Database(DB_PATH);
     globalForDb.pipelineDb.pragma("journal_mode = WAL");
@@ -787,5 +812,17 @@ export function getLineageCacheStats(): {
     totalHits: stats.total_hits || 0,
     topAnchors: topAnchors.map(a => ({ anchorId: a.anchor_id, hitCount: a.hit_count })),
   };
+}
+
+// ============================================================================
+// Static Mode Detection
+// ============================================================================
+
+/**
+ * Returns true if running in static mode (Vercel production).
+ * Used by API routes to disable write operations.
+ */
+export function isStaticMode(): boolean {
+  return USE_STATIC_MODE;
 }
 

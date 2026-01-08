@@ -35,6 +35,11 @@ interface GraphStats {
   flows: number;
 }
 
+// Check if we're in static/production mode (Vercel)
+// In static mode, indexing operations are not available
+const IS_STATIC_MODE = process.env.NEXT_PUBLIC_STATIC_MODE === "true" || 
+  (typeof window !== "undefined" && window.location.hostname !== "localhost");
+
 export default function Home() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
@@ -44,6 +49,15 @@ export default function Home() {
   const [isResetting, setIsResetting] = useState(false);
   const [existingData, setExistingData] = useState<{ nodes: number; edges: number } | null>(null);
   const [isCheckingData, setIsCheckingData] = useState(true);
+  const [isStaticMode, setIsStaticMode] = useState(IS_STATIC_MODE);
+
+  // Detect static mode on mount (check if ingest endpoint is available)
+  useEffect(() => {
+    // If hostname is not localhost, we're likely in production
+    if (typeof window !== "undefined" && window.location.hostname !== "localhost") {
+      setIsStaticMode(true);
+    }
+  }, []);
 
   // Check for existing indexed data on mount
   useEffect(() => {
@@ -191,17 +205,29 @@ export default function Home() {
 
             {/* Existing Data Banner */}
             {existingData && (
-              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 max-w-lg mx-auto">
+              <div className={`p-4 rounded-xl max-w-lg mx-auto ${
+                isStaticMode 
+                  ? "bg-emerald-500/10 border border-emerald-500/30" 
+                  : "bg-amber-500/10 border border-amber-500/30"
+              }`}>
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-amber-500/20 flex items-center justify-center flex-shrink-0">
-                    <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+                    isStaticMode ? "bg-emerald-500/20" : "bg-amber-500/20"
+                  }`}>
+                    <svg className={`w-5 h-5 ${isStaticMode ? "text-emerald-400" : "text-amber-400"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      {isStaticMode ? (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      ) : (
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      )}
                     </svg>
                   </div>
                   <div className="text-left">
-                    <p className="text-sm text-amber-200 font-medium">Existing data found</p>
+                    <p className={`text-sm font-medium ${isStaticMode ? "text-emerald-200" : "text-amber-200"}`}>
+                      {isStaticMode ? "Graph data loaded" : "Existing data found"}
+                    </p>
                     <p className="text-xs text-white/50">
-                      {existingData.nodes} nodes, {existingData.edges} edges indexed
+                      {existingData.nodes} nodes, {existingData.edges} edges
                     </p>
                   </div>
                 </div>
@@ -217,22 +243,33 @@ export default function Home() {
                 >
                   Open Explorer
                 </a>
-                <button
-                  onClick={startIndexing}
-                  disabled={isLoading}
-                  className="px-8 py-4 rounded-xl bg-white/10 hover:bg-white/20 transition-colors font-semibold text-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  {isLoading ? "Starting..." : "Refresh"}
-                </button>
-                <button
-                  onClick={() => setShowResetConfirm(true)}
-                  className="px-8 py-4 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors font-semibold text-lg border border-red-500/30"
-                >
-                  Reset
-                </button>
+                {!isStaticMode && (
+                  <>
+                    <button
+                      onClick={startIndexing}
+                      disabled={isLoading}
+                      className="px-8 py-4 rounded-xl bg-white/10 hover:bg-white/20 transition-colors font-semibold text-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      {isLoading ? "Starting..." : "Refresh"}
+                    </button>
+                    <button
+                      onClick={() => setShowResetConfirm(true)}
+                      className="px-8 py-4 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors font-semibold text-lg border border-red-500/30"
+                    >
+                      Reset
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : isStaticMode ? (
+              <div className="text-center space-y-4">
+                <p className="text-white/60">No graph data available.</p>
+                <p className="text-sm text-white/40">
+                  Run <code className="px-2 py-1 bg-white/10 rounded">npm run dev</code> locally to index your pipelines.
+                </p>
               </div>
             ) : (
               <button
@@ -494,18 +531,22 @@ export default function Home() {
               >
                 Open Graph Explorer
               </a>
-              <button
-                onClick={startIndexing}
-                className="px-8 py-4 rounded-xl bg-white/10 hover:bg-white/20 transition-colors font-semibold"
-              >
-                Re-index
-              </button>
-              <button
-                onClick={() => setShowResetConfirm(true)}
-                className="px-8 py-4 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors font-semibold border border-red-500/30"
-              >
-                Reset
-              </button>
+              {!isStaticMode && (
+                <>
+                  <button
+                    onClick={startIndexing}
+                    className="px-8 py-4 rounded-xl bg-white/10 hover:bg-white/20 transition-colors font-semibold"
+                  >
+                    Re-index
+                  </button>
+                  <button
+                    onClick={() => setShowResetConfirm(true)}
+                    className="px-8 py-4 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 transition-colors font-semibold border border-red-500/30"
+                  >
+                    Reset
+                  </button>
+                </>
+              )}
             </div>
           </div>
         )}

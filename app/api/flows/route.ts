@@ -1,15 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
-import { getFlows, insertFlow, getNodes, getDb, getNodeById } from "@/lib/db";
+import { getFlows, insertFlow, getNodes, getEdges, getNodeById } from "@/lib/db";
 import type { GraphFlow, GraphNode, NodeMetadata } from "@/lib/types";
 
 // Helper to build member nodes by traversing both upstream and downstream from anchor
+// Uses getEdges() which works with both SQLite and static adapter
 export function buildFlowMembers(anchorNodeId: string, depth: number = 6): string[] {
-  const db = getDb();
-  const edges = db.prepare("SELECT from_node, to_node FROM edges").all() as Array<{
-    from_node: string;
-    to_node: string;
-  }>;
+  const edges = getEdges();
 
   // Build upstream map (to_node -> from_nodes that feed into it)
   const upstreamMap = new Map<string, Set<string>>();
@@ -106,12 +103,8 @@ export async function POST(request: NextRequest) {
       metadata: n.metadata ? (JSON.parse(n.metadata) as NodeMetadata) : undefined,
     }));
 
-    // Get edges for bidirectional traversal
-    const db = getDb();
-    const edges = db.prepare("SELECT from_node, to_node FROM edges").all() as Array<{
-      from_node: string;
-      to_node: string;
-    }>;
+    // Get edges for bidirectional traversal (works with both SQLite and static adapter)
+    const edges = getEdges();
 
     // Build upstream map (to_node -> from_nodes that feed into it)
     const upstreamMap = new Map<string, Set<string>>();

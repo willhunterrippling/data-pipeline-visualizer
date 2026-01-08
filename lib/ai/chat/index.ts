@@ -2,7 +2,7 @@
  * Pipeline Chat module - Agentic AI chat for exploring data pipelines
  */
 
-export { runAgent, simpleComplete } from "./agent";
+export { runAgent, runAgentStream, simpleComplete } from "./agent";
 export {
   searchNodes,
   getNodeDetails,

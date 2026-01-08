@@ -5,9 +5,10 @@ import { v4 as uuid } from "uuid";
 import type {
   ChatMessage,
   ChatContext,
-  ChatResponse,
   ProposedAction,
   GraphNode,
+  ToolCallLog,
+  ChatStreamEvent,
 } from "@/lib/types";
 
 // ============================================================================
@@ -18,6 +19,31 @@ interface PipelineChatProps {
   context: ChatContext;
   onAction: (action: ProposedAction) => void;
   allNodes?: GraphNode[];
+}
+
+// Timeline item - either reasoning text or a tool call
+type TimelineItem = 
+  | { type: "reasoning"; content: string }
+  | { type: "tool"; toolCall: ToolCallLog };
+
+// Streaming state for the current assistant response
+interface StreamingState {
+  isStreaming: boolean;
+  thinkingMessage: string;
+  // Current reasoning being streamed
+  currentReasoning: string;
+  currentReasoningComplete: boolean;
+  // Timeline of completed items (reasoning + tool calls interleaved)
+  timeline: TimelineItem[];
+  // For tracking pending tool calls
+  pendingToolCalls: Map<string, { toolName: string; args: Record<string, unknown>; startTime: number }>;
+  messageContent: string;
+  actions: ProposedAction[];
+}
+
+// Extended message type to include timeline
+interface ExtendedChatMessage extends ChatMessage {
+  timeline?: TimelineItem[];
 }
 
 // ============================================================================
@@ -35,38 +61,31 @@ function MarkdownContent({ content, allNodes, onNodeClick }: MarkdownContentProp
     const paragraphs = content.split(/\n\n+/);
 
     return paragraphs.map((paragraph, pIdx) => {
-      // Process inline formatting
       const processInline = (text: string): React.ReactNode[] => {
         const parts: React.ReactNode[] = [];
         let key = 0;
-
-        // Match **bold**, *italic*, `code`
         const pattern = /(\*\*(.+?)\*\*|\*(.+?)\*|`([^`]+)`)/g;
         let lastIndex = 0;
         let match;
 
         while ((match = pattern.exec(text)) !== null) {
-          // Add text before match
           if (match.index > lastIndex) {
             parts.push(text.slice(lastIndex, match.index));
           }
 
           if (match[2]) {
-            // Bold
             parts.push(
               <strong key={key++} className="font-semibold text-white">
                 {match[2]}
               </strong>
             );
           } else if (match[3]) {
-            // Italic
             parts.push(
               <em key={key++} className="italic">
                 {match[3]}
               </em>
             );
           } else if (match[4]) {
-            // Code - check if it's a node name
             const codeText = match[4];
             const matchingNode = allNodes?.find(
               (n) => n.name === codeText || n.id === codeText
@@ -97,7 +116,6 @@ function MarkdownContent({ content, allNodes, onNodeClick }: MarkdownContentProp
           lastIndex = pattern.lastIndex;
         }
 
-        // Add remaining text
         if (lastIndex < text.length) {
           parts.push(text.slice(lastIndex));
         }
@@ -105,7 +123,6 @@ function MarkdownContent({ content, allNodes, onNodeClick }: MarkdownContentProp
         return parts.length > 0 ? parts : [text];
       };
 
-      // Handle lists
       if (paragraph.match(/^[-*]\s/m)) {
         const items = paragraph.split(/\n/).filter((line) => line.trim());
         return (
@@ -119,7 +136,6 @@ function MarkdownContent({ content, allNodes, onNodeClick }: MarkdownContentProp
         );
       }
 
-      // Regular paragraph
       const lines = paragraph.split(/\n/);
       return (
         <p key={pIdx} className="mb-3 last:mb-0 text-white/80 leading-relaxed">
@@ -204,11 +220,224 @@ function ActionButton({ action, onClick }: ActionButtonProps) {
 }
 
 // ============================================================================
+// Tool Display Helpers
+// ============================================================================
+
+function getToolDisplayName(toolName: string): string {
+  switch (toolName) {
+    case "searchNodes": return "Search";
+    case "getNodeDetails": return "Read";
+    case "getUpstreamLineage": return "Upstream";
+    case "getDownstreamLineage": return "Downstream";
+    case "findFlowsContaining": return "Find Flows";
+    case "getFlowDetails": return "Flow Details";
+    case "listFlows": return "List Flows";
+    case "searchByColumn": return "Column Search";
+    case "getGraphStats": return "Stats";
+    default: return toolName;
+  }
+}
+
+function getToolTarget(toolCall: ToolCallLog): string {
+  const { toolName, args } = toolCall;
+  switch (toolName) {
+    case "searchNodes":
+      return `"${args.query}"`;
+    case "getNodeDetails":
+    case "getUpstreamLineage":
+    case "getDownstreamLineage":
+    case "findFlowsContaining": {
+      const nodeId = args.nodeId as string;
+      // Extract just the model name from full ID
+      const parts = nodeId.split(".");
+      return parts[parts.length - 1] || nodeId;
+    }
+    case "getFlowDetails":
+      return args.flowId as string;
+    case "searchByColumn":
+      return `"${args.columnName}"`;
+    default:
+      return "";
+  }
+}
+
+// ============================================================================
+// Collapsible Section Component (Cursor-like)
+// ============================================================================
+
+interface CollapsibleSectionProps {
+  title: string;
+  icon: React.ReactNode;
+  isExpanded: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+  isStreaming?: boolean;
+  badge?: string;
+}
+
+function CollapsibleSection({ 
+  title, 
+  icon, 
+  isExpanded, 
+  onToggle, 
+  children, 
+  isStreaming,
+  badge 
+}: CollapsibleSectionProps) {
+  return (
+    <div className="mb-2">
+      <button
+        onClick={onToggle}
+        className="flex items-center gap-2 text-xs text-white/50 hover:text-white/70 transition-colors w-full text-left py-1"
+      >
+        <svg 
+          className={`w-3 h-3 transition-transform duration-200 ${isExpanded ? "rotate-90" : ""}`} 
+          fill="none" 
+          viewBox="0 0 24 24" 
+          stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        {icon}
+        <span className="font-medium">{title}</span>
+        {badge && (
+          <span className="text-white/30">{badge}</span>
+        )}
+        {isStreaming && (
+          <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse ml-1" />
+        )}
+      </button>
+      
+      <div 
+        className={`overflow-hidden transition-all duration-200 ${
+          isExpanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"
+        }`}
+      >
+        <div className="pl-5 pt-1">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Thinking Timeline (Cursor-like - interleaved reasoning + tool calls)
+// ============================================================================
+
+interface ThinkingTimelineProps {
+  timeline: TimelineItem[];
+  currentReasoning: string;
+  isStreaming: boolean;
+  defaultExpanded?: boolean;
+}
+
+function ThinkingTimeline({ 
+  timeline, 
+  currentReasoning, 
+  isStreaming, 
+  defaultExpanded = true 
+}: ThinkingTimelineProps) {
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
+
+  // Count tool calls for the title
+  const toolCount = timeline.filter(item => item.type === "tool").length;
+
+  // Auto-collapse when streaming completes
+  useEffect(() => {
+    if (!isStreaming && !currentReasoning && timeline.length > 0) {
+      const timer = setTimeout(() => setIsExpanded(false), 800);
+      return () => clearTimeout(timer);
+    }
+  }, [isStreaming, currentReasoning, timeline.length]);
+
+  if (timeline.length === 0 && !currentReasoning && !isStreaming) return null;
+
+  // Build title based on content
+  const title = toolCount > 0 
+    ? `Thinking · ${toolCount} ${toolCount === 1 ? "tool" : "tools"} used`
+    : "Thinking";
+
+  return (
+    <CollapsibleSection
+      title={title}
+      icon={
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+        </svg>
+      }
+      isExpanded={isExpanded}
+      onToggle={() => setIsExpanded(!isExpanded)}
+      isStreaming={isStreaming}
+    >
+      <div className="space-y-1.5">
+        {timeline.map((item, idx) => (
+          <div key={idx}>
+            {item.type === "reasoning" ? (
+              <p className="text-xs text-white/60 leading-relaxed py-0.5">
+                {item.content}
+              </p>
+            ) : (
+              <div className="flex items-center gap-2 text-xs py-0.5 text-white/50 bg-white/5 rounded px-2 -mx-2">
+                <span className="text-amber-400/70 font-medium min-w-[70px]">
+                  {getToolDisplayName(item.toolCall.toolName)}
+                </span>
+                <span className="text-white/40 truncate flex-1">
+                  {getToolTarget(item.toolCall)}
+                </span>
+                <span className="text-emerald-400/60 flex-shrink-0">
+                  {item.toolCall.result}
+                </span>
+                <span className="text-white/20 flex-shrink-0">
+                  {item.toolCall.durationMs}ms
+                </span>
+              </div>
+            )}
+          </div>
+        ))}
+        
+        {/* Current reasoning being streamed */}
+        {currentReasoning && (
+          <p className="text-xs text-white/60 leading-relaxed py-0.5">
+            {currentReasoning}
+            {isStreaming && <span className="animate-pulse">▊</span>}
+          </p>
+        )}
+        
+        {/* Initial state - no timeline yet */}
+        {timeline.length === 0 && !currentReasoning && isStreaming && (
+          <p className="text-xs text-white/60 leading-relaxed py-0.5">
+            Analyzing your question...<span className="animate-pulse">▊</span>
+          </p>
+        )}
+      </div>
+    </CollapsibleSection>
+  );
+}
+
+// ============================================================================
+// Streaming Indicator
+// ============================================================================
+
+interface StreamingIndicatorProps {
+  message: string;
+}
+
+function StreamingIndicator({ message }: StreamingIndicatorProps) {
+  return (
+    <div className="flex items-center gap-2 text-white/50 py-2">
+      <div className="w-3 h-3 border-2 border-white/20 border-t-cyan-400 rounded-full animate-spin" />
+      <span className="text-xs">{message}</span>
+    </div>
+  );
+}
+
+// ============================================================================
 // Message Component
 // ============================================================================
 
 interface MessageProps {
-  message: ChatMessage;
+  message: ExtendedChatMessage;
   allNodes?: GraphNode[];
   onAction: (action: ProposedAction) => void;
   onNodeClick?: (nodeId: string) => void;
@@ -216,46 +445,122 @@ interface MessageProps {
 
 function Message({ message, allNodes, onAction, onNodeClick }: MessageProps) {
   const isUser = message.role === "user";
+  const [timelineExpanded, setTimelineExpanded] = useState(false);
+
+  if (isUser) {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-cyan-600/30 text-white">
+          <MarkdownContent content={message.content} allNodes={allNodes} onNodeClick={onNodeClick} />
+        </div>
+      </div>
+    );
+  }
+
+  // Count tools in timeline
+  const toolCount = message.timeline?.filter(item => item.type === "tool").length || 0;
+  const hasTimeline = message.timeline && message.timeline.length > 0;
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div
-        className={`max-w-[85%] rounded-2xl px-4 py-3 ${
-          isUser
-            ? "bg-cyan-600/30 text-white"
-            : "bg-white/5 border border-white/10"
-        }`}
-      >
-        <MarkdownContent
-          content={message.content}
-          allNodes={allNodes}
-          onNodeClick={onNodeClick}
-        />
-
-        {/* Tool calls indicator */}
-        {message.toolCalls && message.toolCalls.length > 0 && (
-          <div className="mt-2 pt-2 border-t border-white/10">
-            <div className="text-xs text-white/40 flex items-center gap-1">
+    <div className="flex justify-start">
+      <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-white/5 border border-white/10">
+        {/* Thinking timeline (interleaved reasoning + tools) */}
+        {hasTimeline && (
+          <CollapsibleSection
+            title={toolCount > 0 ? `Thinking · ${toolCount} ${toolCount === 1 ? "tool" : "tools"} used` : "Thinking"}
+            icon={
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
               </svg>
-              {message.toolCalls.length} tool{message.toolCalls.length > 1 ? "s" : ""} used
+            }
+            isExpanded={timelineExpanded}
+            onToggle={() => setTimelineExpanded(!timelineExpanded)}
+          >
+            <div className="space-y-1.5">
+              {message.timeline!.map((item, idx) => (
+                <div key={idx}>
+                  {item.type === "reasoning" ? (
+                    <p className="text-xs text-white/60 leading-relaxed py-0.5">
+                      {item.content}
+                    </p>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs py-0.5 text-white/50 bg-white/5 rounded px-2 -mx-2">
+                      <span className="text-amber-400/70 font-medium min-w-[70px]">
+                        {getToolDisplayName(item.toolCall.toolName)}
+                      </span>
+                      <span className="text-white/40 truncate flex-1">
+                        {getToolTarget(item.toolCall)}
+                      </span>
+                      <span className="text-emerald-400/60 flex-shrink-0">
+                        {item.toolCall.result}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
-          </div>
+          </CollapsibleSection>
         )}
+
+        {/* Message content */}
+        <MarkdownContent content={message.content} allNodes={allNodes} onNodeClick={onNodeClick} />
 
         {/* Action buttons */}
         {message.actions && message.actions.length > 0 && (
           <div className="mt-3 pt-3 border-t border-white/10 flex flex-wrap gap-2">
             {message.actions.map((action, idx) => (
-              <ActionButton
-                key={idx}
-                action={action}
-                onClick={() => onAction(action)}
-              />
+              <ActionButton key={idx} action={action} onClick={() => onAction(action)} />
             ))}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Streaming Message Component
+// ============================================================================
+
+interface StreamingMessageProps {
+  streamingState: StreamingState;
+  allNodes?: GraphNode[];
+  onNodeClick?: (nodeId: string) => void;
+}
+
+function StreamingMessage({ streamingState, allNodes, onNodeClick }: StreamingMessageProps) {
+  const { 
+    thinkingMessage, 
+    currentReasoning,
+    currentReasoningComplete,
+    timeline, 
+    messageContent 
+  } = streamingState;
+
+  const hasTimeline = timeline.length > 0 || currentReasoning;
+  const showTimeline = hasTimeline || (!currentReasoningComplete);
+  const showIndicator = !messageContent && !hasTimeline && timeline.length === 0;
+
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-white/5 border border-white/10">
+        {/* Interleaved thinking timeline */}
+        {showTimeline && (
+          <ThinkingTimeline 
+            timeline={timeline}
+            currentReasoning={currentReasoning}
+            isStreaming={!messageContent}
+          />
+        )}
+
+        {/* Loading indicator when nothing else to show */}
+        {showIndicator && (
+          <StreamingIndicator message={thinkingMessage || "Thinking..."} />
+        )}
+
+        {/* Message content */}
+        {messageContent && (
+          <MarkdownContent content={messageContent} allNodes={allNodes} onNodeClick={onNodeClick} />
         )}
       </div>
     </div>
@@ -272,52 +577,189 @@ export default function PipelineChat({
   allNodes,
 }: PipelineChatProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ExtendedChatMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  
+  const [streamingState, setStreamingState] = useState<StreamingState>({
+    isStreaming: false,
+    thinkingMessage: "",
+    currentReasoning: "",
+    currentReasoningComplete: false,
+    timeline: [],
+    pendingToolCalls: new Map(),
+    messageContent: "",
+    actions: [],
+  });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Scroll to bottom when messages change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, streamingState.timeline, streamingState.messageContent, streamingState.currentReasoning]);
 
-  // Focus input when drawer opens
   useEffect(() => {
     if (isOpen) {
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [isOpen]);
 
-  // Keyboard shortcut to toggle chat
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // Don't trigger if in any input or textarea
-      if (
-        e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
-      ) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         return;
       }
-
       if (e.key === "?" && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         setIsOpen((prev) => !prev);
       }
     }
-
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  // Handle sending a message
-  const sendMessage = useCallback(async () => {
-    if (!inputValue.trim() || isLoading) return;
+  const processStreamEvent = useCallback((event: ChatStreamEvent) => {
+    switch (event.type) {
+      case "thinking":
+        setStreamingState((prev) => ({
+          ...prev,
+          thinkingMessage: event.message,
+        }));
+        break;
 
-    const userMessage: ChatMessage = {
+      case "reasoning":
+        setStreamingState((prev) => {
+          // If we're starting a new reasoning phase and have a completed one, save to timeline
+          if (event.isPartial && prev.currentReasoning && prev.currentReasoningComplete) {
+            return {
+              ...prev,
+              timeline: [...prev.timeline, { type: "reasoning", content: prev.currentReasoning }],
+              currentReasoning: event.content,
+              currentReasoningComplete: false,
+            };
+          }
+          
+          return {
+            ...prev,
+            currentReasoning: event.content,
+            currentReasoningComplete: !event.isPartial,
+          };
+        });
+        break;
+
+      case "tool_start":
+        setStreamingState((prev) => {
+          const newPending = new Map(prev.pendingToolCalls);
+          newPending.set(event.toolCallId, {
+            toolName: event.toolName,
+            args: event.args,
+            startTime: Date.now(),
+          });
+          return {
+            ...prev,
+            pendingToolCalls: newPending,
+          };
+        });
+        break;
+
+      case "tool_result":
+        setStreamingState((prev) => {
+          const newPending = new Map(prev.pendingToolCalls);
+          newPending.delete(event.toolCallId);
+          
+          const newToolCall: ToolCallLog = {
+            toolName: event.toolName,
+            args: prev.pendingToolCalls.get(event.toolCallId)?.args || {},
+            result: event.result,
+            durationMs: event.durationMs,
+          };
+          
+          // First, finalize any current reasoning before adding tool
+          let newTimeline = prev.timeline;
+          if (prev.currentReasoning && prev.currentReasoningComplete) {
+            newTimeline = [...newTimeline, { type: "reasoning" as const, content: prev.currentReasoning }];
+          }
+          
+          // Add tool call to timeline
+          newTimeline = [...newTimeline, { type: "tool" as const, toolCall: newToolCall }];
+          
+          return {
+            ...prev,
+            pendingToolCalls: newPending,
+            timeline: newTimeline,
+            // Clear reasoning once added to timeline
+            currentReasoning: prev.currentReasoningComplete ? "" : prev.currentReasoning,
+            currentReasoningComplete: false,
+          };
+        });
+        break;
+
+      case "message":
+        setStreamingState((prev) => ({
+          ...prev,
+          messageContent: event.content,
+          thinkingMessage: "",
+        }));
+        break;
+
+      case "actions":
+        setStreamingState((prev) => ({
+          ...prev,
+          actions: event.actions,
+        }));
+        break;
+
+      case "error":
+        setError(event.error);
+        setStreamingState((prev) => ({
+          ...prev,
+          isStreaming: false,
+        }));
+        break;
+
+      case "done":
+        setStreamingState((prev) => {
+          const { messageContent, actions, timeline, currentReasoning } = prev;
+          
+          // Build final timeline - add any remaining reasoning
+          let finalTimeline = [...timeline];
+          if (currentReasoning) {
+            finalTimeline.push({ type: "reasoning" as const, content: currentReasoning });
+          }
+          
+          queueMicrotask(() => {
+            const finalMessage: ExtendedChatMessage = {
+              id: uuid(),
+              role: "assistant",
+              content: messageContent,
+              timestamp: new Date().toISOString(),
+              actions: actions.length > 0 ? actions : undefined,
+              timeline: finalTimeline.length > 0 ? finalTimeline : undefined,
+            };
+            setMessages((msgs) => [...msgs, finalMessage]);
+          });
+          
+          return {
+            isStreaming: false,
+            thinkingMessage: "",
+            currentReasoning: "",
+            currentReasoningComplete: false,
+            timeline: [],
+            pendingToolCalls: new Map(),
+            messageContent: "",
+            actions: [],
+          };
+        });
+        break;
+    }
+  }, []);
+
+  const sendMessage = useCallback(async () => {
+    if (!inputValue.trim() || streamingState.isStreaming) return;
+
+    const userMessage: ExtendedChatMessage = {
       id: uuid(),
       role: "user",
       content: inputValue.trim(),
@@ -326,18 +768,35 @@ export default function PipelineChat({
 
     setMessages((prev) => [...prev, userMessage]);
     setInputValue("");
-    setIsLoading(true);
     setError(null);
+    
+    setStreamingState({
+      isStreaming: true,
+      thinkingMessage: "Analyzing your question...",
+      currentReasoning: "",
+      currentReasoningComplete: false,
+      timeline: [],
+      pendingToolCalls: new Map(),
+      messageContent: "",
+      actions: [],
+    });
+
+    abortControllerRef.current = new AbortController();
 
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Accept": "text/event-stream",
+        },
         body: JSON.stringify({
           message: userMessage.content,
           conversationHistory: messages,
           context,
+          stream: true,
         }),
+        signal: abortControllerRef.current.signal,
       });
 
       if (!response.ok) {
@@ -345,27 +804,47 @@ export default function PipelineChat({
         throw new Error(errData.error || "Failed to get response");
       }
 
-      const data: ChatResponse = await response.json();
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("No response body");
+      }
 
-      const assistantMessage: ChatMessage = {
-        id: data.messageId,
-        role: "assistant",
-        content: data.response.message,
-        timestamp: new Date().toISOString(),
-        actions: data.response.actions,
-        toolCalls: data.response.toolCalls,
-      };
+      const decoder = new TextDecoder();
+      let buffer = "";
 
-      setMessages((prev) => [...prev, assistantMessage]);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const eventData = JSON.parse(line.slice(6)) as ChatStreamEvent;
+              processStreamEvent(eventData);
+            } catch (e) {
+              console.error("Failed to parse SSE event:", e);
+            }
+          }
+        }
+      }
     } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
       console.error("Chat error:", err);
       setError(err instanceof Error ? err.message : "Something went wrong");
-    } finally {
-      setIsLoading(false);
+      setStreamingState((prev) => ({
+        ...prev,
+        isStreaming: false,
+      }));
     }
-  }, [inputValue, isLoading, messages, context]);
+  }, [inputValue, streamingState.isStreaming, messages, context, processStreamEvent]);
 
-  // Handle input keydown
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -377,7 +856,6 @@ export default function PipelineChat({
     }
   };
 
-  // Handle node click from markdown content
   const handleNodeClick = useCallback(
     (nodeId: string) => {
       onAction({
@@ -389,19 +867,30 @@ export default function PipelineChat({
     [onAction]
   );
 
-  // Clear conversation
   const clearConversation = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
     setMessages([]);
     setError(null);
+    setStreamingState({
+      isStreaming: false,
+      thinkingMessage: "",
+      currentReasoning: "",
+      currentReasoningComplete: false,
+      timeline: [],
+      pendingToolCalls: new Map(),
+      messageContent: "",
+      actions: [],
+    });
   };
 
   return (
     <>
-      {/* Toggle Button - only visible when drawer is closed */}
       {!isOpen && (
         <button
           onClick={() => setIsOpen(true)}
-          className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 px-4 py-2.5 rounded-lg shadow-lg flex items-center gap-2 transition-all bg-gradient-to-br from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400"
+          className="fixed bottom-4 left-4 z-40 px-4 py-2.5 rounded-lg shadow-lg flex items-center gap-2 transition-all bg-gradient-to-br from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400"
           title="Toggle Chat (?)"
         >
           <svg className="w-5 h-5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -411,14 +900,12 @@ export default function PipelineChat({
         </button>
       )}
 
-      {/* Chat Drawer */}
       <div
-        className={`fixed bottom-0 left-0 right-0 z-30 transition-transform duration-300 ${
+        className={`fixed bottom-0 left-0 w-1/2 z-30 transition-transform duration-300 ${
           isOpen ? "translate-y-0" : "translate-y-full"
         }`}
       >
         <div className="bg-[#0f0f14] border-t border-white/10 shadow-2xl">
-          {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-emerald-500 flex items-center justify-center">
@@ -432,7 +919,7 @@ export default function PipelineChat({
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {messages.length > 0 && (
+              {(messages.length > 0 || streamingState.isStreaming) && (
                 <button
                   onClick={clearConversation}
                   className="p-2 hover:bg-white/10 rounded-lg transition-colors text-white/50 hover:text-white/80"
@@ -454,9 +941,8 @@ export default function PipelineChat({
             </div>
           </div>
 
-          {/* Messages */}
           <div className="h-80 overflow-y-auto p-4 space-y-4">
-            {messages.length === 0 && (
+            {messages.length === 0 && !streamingState.isStreaming && (
               <div className="text-center py-8">
                 <div className="text-4xl mb-3">💬</div>
                 <p className="text-white/60 text-sm">
@@ -496,15 +982,12 @@ export default function PipelineChat({
               />
             ))}
 
-            {isLoading && (
-              <div className="flex justify-start">
-                <div className="bg-white/5 border border-white/10 rounded-2xl px-4 py-3">
-                  <div className="flex items-center gap-2 text-white/60">
-                    <div className="w-4 h-4 border-2 border-white/20 border-t-white/60 rounded-full animate-spin" />
-                    <span className="text-sm">Thinking...</span>
-                  </div>
-                </div>
-              </div>
+            {streamingState.isStreaming && (
+              <StreamingMessage
+                streamingState={streamingState}
+                allNodes={allNodes}
+                onNodeClick={handleNodeClick}
+              />
             )}
 
             {error && (
@@ -518,7 +1001,6 @@ export default function PipelineChat({
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Input */}
           <div className="p-4 border-t border-white/10">
             <div className="flex gap-2">
               <textarea
@@ -533,7 +1015,7 @@ export default function PipelineChat({
               />
               <button
                 onClick={sendMessage}
-                disabled={!inputValue.trim() || isLoading}
+                disabled={!inputValue.trim() || streamingState.isStreaming}
                 className="px-4 py-3 bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl transition-all"
               >
                 <svg className="w-5 h-5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">

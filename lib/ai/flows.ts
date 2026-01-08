@@ -278,7 +278,7 @@ Please:
         memberNodes: [...memberSet],
         userDefined: false,
         inferenceReason: refinement
-          ? `AI-refined: ${refinement.anchorNodePattern ? "updated anchor pattern" : ""}${refinement.description ? " improved description" : ""}${refinement.upstreamDepth ? ` depth=${depth}` : ""}`.trim() || "AI-validated predefined flow"
+          ? `AI-refined: ${refinement.anchorNodePattern ? "updated anchor pattern" : ""}${refinement.description ? " improved description" : ""}${refinement.upstreamDepth ? ` depth=${refinement.upstreamDepth}` : ""}`.trim() || "AI-validated predefined flow"
           : `Predefined flow with anchor pattern: ${template.anchorPattern}`,
       });
     }

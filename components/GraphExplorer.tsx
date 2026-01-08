@@ -701,8 +701,8 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       // Build maps of current and new elements
       const currentNodeIds = new Set<string>();
       const currentEdgeIds = new Set<string>();
-      cy.nodes().forEach(n => currentNodeIds.add(n.id()));
-      cy.edges().forEach(e => currentEdgeIds.add(e.id()));
+      cy.nodes().forEach(n => { currentNodeIds.add(n.id()); });
+      cy.edges().forEach(e => { currentEdgeIds.add(e.id()); });
       
       const newNodeMap = new Map<string, cytoscape.ElementDefinition>();
       const newEdgeMap = new Map<string, cytoscape.ElementDefinition>();
@@ -710,14 +710,15 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       const newEdgeIds = new Set<string>();
       
       for (const el of newElements) {
+        const elId = el.data.id as string;
         if (el.data.source && el.data.target) {
           // It's an edge
-          newEdgeMap.set(el.data.id, el);
-          newEdgeIds.add(el.data.id);
+          newEdgeMap.set(elId, el);
+          newEdgeIds.add(elId);
         } else {
           // It's a node
-          newNodeMap.set(el.data.id, el);
-          newNodeIds.add(el.data.id);
+          newNodeMap.set(elId, el);
+          newNodeIds.add(elId);
         }
       }
       
@@ -775,7 +776,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         
         // Update existing node positions (they may have moved)
         for (const el of nodesToUpdate) {
-          const node = cy.getElementById(el.data.id);
+          const node = cy.getElementById(el.data.id as string);
           if (node.length > 0 && el.position) {
             node.position(el.position);
           }
@@ -899,7 +900,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         </div>
 
         {/* Legend */}
-        <div className="absolute bottom-4 left-4 bg-black/60 backdrop-blur-sm rounded-lg p-3 text-xs space-y-1.5" style={{ zIndex: 10 }}>
+        <div className="absolute bottom-20 left-4 bg-black/60 backdrop-blur-sm rounded-lg p-3 text-xs space-y-1.5" style={{ zIndex: 10 }}>
           <div className="flex items-center gap-2">
             <div className="w-3 h-3 rounded" style={{ backgroundColor: NODE_COLORS.source.border }} />
             <span className="text-white/70">Source / Seed</span>

@@ -53,7 +53,7 @@ const EXTERNAL_OPERATOR_PATTERNS: Array<{
 const EXTERNAL_API_PATTERNS: Array<{
   pattern: RegExp;
   name: string;
-  type: "application" | "reverse_etl";
+  type: "application" | "reverse_etl" | "dashboard";
 }> = [
   { pattern: /requests\.post\s*\([^)]*outreach/i, name: "Outreach.io API", type: "application" },
   { pattern: /requests\.post\s*\([^)]*brevo|sendinblue/i, name: "Brevo API", type: "application" },

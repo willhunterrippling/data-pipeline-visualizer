@@ -141,7 +141,7 @@ export default function EditFlowModal({
     setError(null);
 
     try {
-      const res = await fetch(`/api/flows/${encodeURIComponent(flow.id)}`, {
+      const res = await fetch(`/api/flows/${encodeURIComponent(flow!.id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

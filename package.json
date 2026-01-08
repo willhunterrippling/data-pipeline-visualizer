@@ -4,9 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run export-graph && next build",
+    "build:local": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "export-graph": "npx tsx scripts/export-graph.ts"
   },
   "dependencies": {
     "@types/dagre": "^0.7.53",

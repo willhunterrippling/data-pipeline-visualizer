@@ -1,7 +1,15 @@
 import { NextResponse } from "next/server";
-import { clearAllData } from "@/lib/db";
+import { clearAllData, isStaticMode } from "@/lib/db";
 
 export async function POST() {
+  // Disable reset in production (static mode)
+  if (isStaticMode()) {
+    return NextResponse.json(
+      { error: "Database reset is not available in production." },
+      { status: 405 }
+    );
+  }
+
   try {
     clearAllData();
     return NextResponse.json({ success: true, message: "All data has been cleared" });

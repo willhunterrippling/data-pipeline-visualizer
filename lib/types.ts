@@ -220,3 +220,74 @@ export interface ChatResponse {
   messageId: string;
 }
 
+// ============================================================================
+// Streaming Chat Types (Real-time train of thought)
+// ============================================================================
+
+export type ChatStreamEventType =
+  | "thinking"     // Agent is processing (brief status)
+  | "reasoning"    // Agent's detailed reasoning/planning text
+  | "tool_start"   // Starting a tool call
+  | "tool_result"  // Tool completed with result
+  | "message"      // Partial or final message text
+  | "actions"      // Proposed actions
+  | "error"        // Error occurred
+  | "done";        // Stream complete
+
+export interface ThinkingEvent {
+  type: "thinking";
+  message: string; // e.g., "Searching for leads table..."
+}
+
+export interface ReasoningEvent {
+  type: "reasoning";
+  content: string;  // The model's explanation of what it's planning
+  isPartial: boolean; // True if still streaming, false if complete
+}
+
+export interface ToolStartEvent {
+  type: "tool_start";
+  toolName: string;
+  args: Record<string, unknown>;
+  toolCallId: string; // Unique ID to match with result
+}
+
+export interface ToolResultEvent {
+  type: "tool_result";
+  toolCallId: string;
+  toolName: string;
+  result: string; // Summarized result
+  durationMs: number;
+}
+
+export interface MessageEvent {
+  type: "message";
+  content: string; // Partial or complete message text
+  isPartial: boolean; // True if streaming, false if final
+}
+
+export interface ActionsEvent {
+  type: "actions";
+  actions: ProposedAction[];
+}
+
+export interface ErrorEvent {
+  type: "error";
+  error: string;
+}
+
+export interface DoneEvent {
+  type: "done";
+  toolCalls: ToolCallLog[]; // Final summary of all tools used
+}
+
+export type ChatStreamEvent =
+  | ThinkingEvent
+  | ReasoningEvent
+  | ToolStartEvent
+  | ToolResultEvent
+  | MessageEvent
+  | ActionsEvent
+  | ErrorEvent
+  | DoneEvent;
+

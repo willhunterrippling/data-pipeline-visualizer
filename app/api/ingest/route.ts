@@ -1,9 +1,17 @@
 import { NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
-import { createJob, getDb } from "@/lib/db";
+import { createJob, getDb, isStaticMode } from "@/lib/db";
 import { Indexer, IndexerConfig } from "@/lib/indexer";
 
 export async function POST() {
+  // Disable indexing in production (static mode)
+  if (isStaticMode()) {
+    return NextResponse.json(
+      { error: "Indexing is not available in production. Run locally with npm run dev." },
+      { status: 405 }
+    );
+  }
+
   // Initialize database
   getDb();
 

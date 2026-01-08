@@ -38,6 +38,23 @@ function initSchema(db: Database.Database) {
   for (const col of missingCols) {
     db.exec(`ALTER TABLE nodes ADD COLUMN ${col.name} ${col.type}`);
   }
+  
+  // Migration: Create relational_explanations table if it doesn't exist
+  // This handles existing databases that were created before this table was added
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS relational_explanations (
+      node_id TEXT NOT NULL,
+      anchor_id TEXT NOT NULL,
+      transformation_summary TEXT,
+      business_context TEXT,
+      full_explanation TEXT,
+      generated_at TEXT DEFAULT (datetime('now')),
+      model_used TEXT,
+      PRIMARY KEY (node_id, anchor_id),
+      FOREIGN KEY (node_id) REFERENCES nodes(id),
+      FOREIGN KEY (anchor_id) REFERENCES nodes(id)
+    )
+  `);
 }
 
 export function closeDb() {
@@ -123,6 +140,16 @@ export interface DbCitation {
 export interface DbExplanation {
   node_id: string;
   summary: string | null;
+  generated_at: string;
+  model_used: string | null;
+}
+
+export interface DbRelationalExplanation {
+  node_id: string;
+  anchor_id: string;
+  transformation_summary: string | null;
+  business_context: string | null;
+  full_explanation: string | null;
   generated_at: string;
   model_used: string | null;
 }
@@ -403,6 +430,31 @@ export function getExplanation(nodeId: string): DbExplanation | undefined {
   return db.prepare("SELECT * FROM explanations WHERE node_id = ?").get(nodeId) as DbExplanation | undefined;
 }
 
+// Relational explanation operations
+export function insertRelationalExplanation(explanation: DbRelationalExplanation) {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO relational_explanations 
+    (node_id, anchor_id, transformation_summary, business_context, full_explanation, model_used)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(
+    explanation.node_id,
+    explanation.anchor_id,
+    explanation.transformation_summary,
+    explanation.business_context,
+    explanation.full_explanation,
+    explanation.model_used
+  );
+}
+
+export function getRelationalExplanation(nodeId: string, anchorId: string): DbRelationalExplanation | undefined {
+  const db = getDb();
+  return db.prepare(
+    "SELECT * FROM relational_explanations WHERE node_id = ? AND anchor_id = ?"
+  ).get(nodeId, anchorId) as DbRelationalExplanation | undefined;
+}
+
 // Job operations
 export function createJob(id: string): DbJob {
   const db = getDb();
@@ -552,6 +604,7 @@ export function clearAllData(options?: { preserveExplanations?: boolean }) {
   try {
     db.exec(`
       ${preserveExplanations ? '-- Preserving explanations' : 'DELETE FROM explanations;'}
+      ${preserveExplanations ? '-- Preserving relational_explanations' : 'DELETE FROM relational_explanations;'}
       DELETE FROM citations;
       DELETE FROM anchor_candidates;
       DELETE FROM lineage_cache;
@@ -573,6 +626,18 @@ export function cleanupOrphanedExplanations(): number {
   const db = getDb();
   const result = db.prepare(`
     DELETE FROM explanations WHERE node_id NOT IN (SELECT id FROM nodes)
+  `).run();
+  return result.changes;
+}
+
+// Clean up orphaned relational explanations
+// Removes entries where either node_id or anchor_id no longer exists
+export function cleanupOrphanedRelationalExplanations(): number {
+  const db = getDb();
+  const result = db.prepare(`
+    DELETE FROM relational_explanations 
+    WHERE node_id NOT IN (SELECT id FROM nodes) 
+       OR anchor_id NOT IN (SELECT id FROM nodes)
   `).run();
   return result.changes;
 }

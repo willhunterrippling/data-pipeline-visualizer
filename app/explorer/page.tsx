@@ -137,9 +137,11 @@ interface LineageData {
 interface SidePanelData {
   node: GraphNode;
   explanation?: string;
+  relationalExplanation?: string;
   upstream: GraphNode[];
   downstream: GraphNode[];
   isLoadingExplanation: boolean;
+  isLoadingRelationalExplanation: boolean;
   visibilityReason?: string;
 }
 
@@ -279,12 +281,13 @@ function ExplorerContent() {
     setFocusId(null); // Reset focus when selecting new anchor
     updateUrl(node.id, flowId);
     
-    // Also show in side panel
+    // Also show in side panel (no relational explanation for anchor itself)
     setSidePanel({
       node,
       upstream: [],
       downstream: [],
       isLoadingExplanation: true,
+      isLoadingRelationalExplanation: false,
     });
 
     // Focus on the node
@@ -302,6 +305,7 @@ function ExplorerContent() {
           upstream: data.upstream,
           downstream: data.downstream,
           isLoadingExplanation: !data.explanation,
+          isLoadingRelationalExplanation: false,
         });
 
         // Generate explanation if not cached
@@ -355,9 +359,10 @@ function ExplorerContent() {
     // Get visibility reason if available
     const visibilityReason = lineageData?.visibilityReasons[node.id]?.description;
     const nodeLayer = lineageData?.layers[node.id]?.layer;
+    const isNotAnchor = node.id !== anchorId;
 
     // If clicking on a node in the lineage (not the anchor), stretch the view
-    if (node.id !== anchorId && lineageData?.nodes.some(n => n.id === node.id)) {
+    if (isNotAnchor && lineageData?.nodes.some(n => n.id === node.id)) {
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'explorer/page.tsx:handleNodeClick',message:'Setting focus for stretching',data:{clickedNodeId:node.id.slice(-40),anchorId:anchorId?.slice(-40),nodeLayer:nodeLayer},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H5'})}).catch(()=>{});
       // #endregion
@@ -370,6 +375,7 @@ function ExplorerContent() {
       upstream: [],
       downstream: [],
       isLoadingExplanation: true,
+      isLoadingRelationalExplanation: isNotAnchor && !!anchorId,
       visibilityReason,
     });
 
@@ -424,6 +430,44 @@ function ExplorerContent() {
             : null
         );
       });
+
+    // Fetch relational explanation if this is not the anchor and we have an anchor
+    if (isNotAnchor && anchorId) {
+      const relController = new AbortController();
+      const relTimeoutId = setTimeout(() => relController.abort(), 60000);
+
+      fetch("/api/explain-relationship", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nodeId: node.id, anchorId }),
+        signal: relController.signal,
+      })
+        .then((res) => res.json())
+        .then((relData) => {
+          setSidePanel((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  relationalExplanation: relData.explanation,
+                  isLoadingRelationalExplanation: false,
+                }
+              : null
+          );
+        })
+        .catch((err) => {
+          console.error("Failed to generate relational explanation:", err);
+          setSidePanel((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  relationalExplanation: "Failed to generate relationship explanation.",
+                  isLoadingRelationalExplanation: false,
+                }
+              : null
+          );
+        })
+        .finally(() => clearTimeout(relTimeoutId));
+    }
   }, [lineageData, anchorId]);
 
   // Clear anchor and focus
@@ -721,6 +765,34 @@ function ExplorerContent() {
                   <p className="text-sm text-white/40 italic">No explanation available.</p>
                 )}
               </div>
+
+              {/* Relationship to Anchor - only show for non-anchor nodes */}
+              {sidePanel.node.id !== anchorId && anchorId && (
+                <div>
+                  <h3 className="text-sm font-medium text-white/60 mb-2 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                    </svg>
+                    Relationship to Anchor
+                  </h3>
+                  {sidePanel.isLoadingRelationalExplanation ? (
+                    <div className="flex items-center gap-2 text-sm text-white/40">
+                      <div className="w-4 h-4 border-2 border-white/20 border-t-purple-400 rounded-full animate-spin" />
+                      Analyzing relationship...
+                    </div>
+                  ) : sidePanel.relationalExplanation ? (
+                    <div className="bg-purple-500/10 border border-purple-500/20 rounded-lg p-3">
+                      <MarkdownContent 
+                        content={sidePanel.relationalExplanation}
+                        nodes={allNodes}
+                        onNodeClick={handleSelectAnchor}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-sm text-white/40 italic">No relationship information available.</p>
+                  )}
+                </div>
+              )}
 
               {/* Upstream */}
               {sidePanel.upstream.length > 0 && (

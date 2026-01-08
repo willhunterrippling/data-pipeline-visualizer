@@ -84,6 +84,20 @@ CREATE TABLE IF NOT EXISTS explanations (
     FOREIGN KEY (node_id) REFERENCES nodes(id)
 );
 
+-- Relational explanations: how a node relates to a specific anchor
+CREATE TABLE IF NOT EXISTS relational_explanations (
+    node_id TEXT NOT NULL,
+    anchor_id TEXT NOT NULL,
+    transformation_summary TEXT,  -- How data transforms along the path
+    business_context TEXT,        -- Why this relationship matters
+    full_explanation TEXT,        -- Combined AI-generated explanation
+    generated_at TEXT DEFAULT (datetime('now')),
+    model_used TEXT,
+    PRIMARY KEY (node_id, anchor_id),
+    FOREIGN KEY (node_id) REFERENCES nodes(id),
+    FOREIGN KEY (anchor_id) REFERENCES nodes(id)
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     status TEXT NOT NULL,          -- pending, running, completed, failed

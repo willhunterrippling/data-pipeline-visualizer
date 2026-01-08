@@ -3,7 +3,7 @@ import { v4 as uuid } from "uuid";
 import { getFlows, insertFlow, getNodes, getDb, getNodeById } from "@/lib/db";
 import type { GraphFlow, GraphNode, NodeMetadata } from "@/lib/types";
 
-// Helper to build member nodes by traversing upstream from anchor
+// Helper to build member nodes by traversing both upstream and downstream from anchor
 export function buildFlowMembers(anchorNodeId: string, depth: number = 6): string[] {
   const db = getDb();
   const edges = db.prepare("SELECT from_node, to_node FROM edges").all() as Array<{
@@ -11,16 +11,26 @@ export function buildFlowMembers(anchorNodeId: string, depth: number = 6): strin
     to_node: string;
   }>;
 
-  // Build upstream map
+  // Build upstream map (to_node -> from_nodes that feed into it)
   const upstreamMap = new Map<string, Set<string>>();
+  // Build downstream map (from_node -> to_nodes that it feeds into)
+  const downstreamMap = new Map<string, Set<string>>();
+  
   for (const edge of edges) {
+    // Upstream: what feeds into this node
     if (!upstreamMap.has(edge.to_node)) {
       upstreamMap.set(edge.to_node, new Set());
     }
     upstreamMap.get(edge.to_node)!.add(edge.from_node);
+    
+    // Downstream: what this node feeds into
+    if (!downstreamMap.has(edge.from_node)) {
+      downstreamMap.set(edge.from_node, new Set());
+    }
+    downstreamMap.get(edge.from_node)!.add(edge.to_node);
   }
 
-  // Traverse upstream from anchor
+  // Traverse both directions from anchor
   const memberSet = new Set<string>();
   
   function getUpstream(nodeId: string, remainingDepth: number, visited: Set<string>): void {
@@ -33,9 +43,21 @@ export function buildFlowMembers(anchorNodeId: string, depth: number = 6): strin
       getUpstream(upId, remainingDepth - 1, visited);
     }
   }
+  
+  function getDownstream(nodeId: string, remainingDepth: number, visited: Set<string>): void {
+    if (remainingDepth === 0 || visited.has(nodeId)) return;
+    visited.add(nodeId);
+    memberSet.add(nodeId);
+
+    const downstream = downstreamMap.get(nodeId) || new Set();
+    for (const downId of downstream) {
+      getDownstream(downId, remainingDepth - 1, visited);
+    }
+  }
 
   memberSet.add(anchorNodeId);
   getUpstream(anchorNodeId, depth, new Set());
+  getDownstream(anchorNodeId, depth, new Set());
 
   return [...memberSet];
 }
@@ -84,20 +106,30 @@ export async function POST(request: NextRequest) {
       metadata: n.metadata ? (JSON.parse(n.metadata) as NodeMetadata) : undefined,
     }));
 
-    // Get edges for upstream traversal
+    // Get edges for bidirectional traversal
     const db = getDb();
     const edges = db.prepare("SELECT from_node, to_node FROM edges").all() as Array<{
       from_node: string;
       to_node: string;
     }>;
 
-    // Build upstream map
+    // Build upstream map (to_node -> from_nodes that feed into it)
     const upstreamMap = new Map<string, Set<string>>();
+    // Build downstream map (from_node -> to_nodes that it feeds into)
+    const downstreamMap = new Map<string, Set<string>>();
+    
     for (const edge of edges) {
+      // Upstream: what feeds into this node
       if (!upstreamMap.has(edge.to_node)) {
         upstreamMap.set(edge.to_node, new Set());
       }
       upstreamMap.get(edge.to_node)!.add(edge.from_node);
+      
+      // Downstream: what this node feeds into
+      if (!downstreamMap.has(edge.from_node)) {
+        downstreamMap.set(edge.from_node, new Set());
+      }
+      downstreamMap.get(edge.from_node)!.add(edge.to_node);
     }
 
     // Find anchor nodes
@@ -120,9 +152,9 @@ export async function POST(request: NextRequest) {
         return nameMatch || descMatch || tagMatch;
       });
 
-      // Prefer marts/reports as anchors
+      // Prefer marts/reports/external systems as anchors
       const preferredAnchors = matchingNodes.filter(
-        (n) => n.name.startsWith("mart_") || n.name.startsWith("rpt_")
+        (n) => n.name.startsWith("mart_") || n.name.startsWith("rpt_") || n.type === "external"
       );
       
       if (preferredAnchors.length > 0) {
@@ -139,7 +171,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Traverse upstream from anchors
+    // Traverse both upstream and downstream from anchors
     const memberSet = new Set<string>();
     
     function getUpstream(nodeId: string, depth: number, visited: Set<string>): void {
@@ -152,10 +184,22 @@ export async function POST(request: NextRequest) {
         getUpstream(upId, depth - 1, visited);
       }
     }
+    
+    function getDownstream(nodeId: string, depth: number, visited: Set<string>): void {
+      if (depth === 0 || visited.has(nodeId)) return;
+      visited.add(nodeId);
+      memberSet.add(nodeId);
+
+      const downstream = downstreamMap.get(nodeId) || new Set();
+      for (const downId of downstream) {
+        getDownstream(downId, depth - 1, visited);
+      }
+    }
 
     for (const anchor of anchors) {
       memberSet.add(anchor);
       getUpstream(anchor, 6, new Set());
+      getDownstream(anchor, 6, new Set());
     }
 
     // Create flow

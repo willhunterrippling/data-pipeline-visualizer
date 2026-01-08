@@ -309,6 +309,81 @@ export function getModelSql(repoPath: string, filePath: string): string | null {
   return readFileSync(fullPath, "utf-8");
 }
 
+/**
+ * Build a map of node ID -> SQL content for all models.
+ * Used by the external inference engine to analyze SQL patterns.
+ */
+export function buildSqlContentMap(
+  nodes: GraphNode[],
+  repoPath: string
+): Map<string, string> {
+  const sqlMap = new Map<string, string>();
+  
+  for (const node of nodes) {
+    // Only process dbt models (not sources, seeds, or external)
+    if (node.subtype !== "dbt_model" && node.subtype !== "dbt_seed") {
+      continue;
+    }
+    
+    const filePath = node.metadata?.filePath;
+    if (!filePath) continue;
+    
+    // Skip non-SQL files
+    if (!filePath.endsWith(".sql")) continue;
+    
+    const sql = getModelSql(repoPath, filePath);
+    if (sql) {
+      sqlMap.set(node.id, sql);
+    }
+  }
+  
+  return sqlMap;
+}
+
+/**
+ * Extract macro names from SQL content.
+ * Matches patterns like {{ macro_name(...) }}
+ */
+export function extractMacroNames(sql: string): string[] {
+  const macros: string[] = [];
+  const macroPattern = /\{\{\s*(\w+)\s*\(/g;
+  let match;
+  while ((match = macroPattern.exec(sql)) !== null) {
+    const name = match[1];
+    // Skip common dbt built-in macros
+    if (!["ref", "source", "config", "var", "env_var", "this", "adapter", "is_incremental"].includes(name)) {
+      macros.push(name);
+    }
+  }
+  return [...new Set(macros)];
+}
+
+/**
+ * Extract column names from SQL SELECT statement.
+ * Returns column names/aliases found in the query.
+ */
+export function extractColumnNames(sql: string): string[] {
+  const columns: string[] = [];
+  
+  // Normalize SQL - remove comments and extra whitespace
+  const normalized = sql
+    .replace(/--.*$/gm, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\s+/g, " ");
+  
+  // Match column aliases (AS column_name)
+  const aliasPattern = /\bAS\s+["']?(\w+)["']?/gi;
+  let match;
+  while ((match = aliasPattern.exec(normalized)) !== null) {
+    columns.push(match[1].toLowerCase());
+  }
+  
+  // Match CTE column definitions
+  const ctePattern = /\bWITH\s+\w+\s+AS\s*\(/gi;
+  
+  return [...new Set(columns)];
+}
+
 // Parse dbt_project.yml for additional metadata
 export function parseDbtProject(projectPath: string): {
   name: string;

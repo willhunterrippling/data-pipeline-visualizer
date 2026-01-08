@@ -30,9 +30,10 @@ import {
   type NodePosition,
   type IncrementalLayoutResult,
 } from "../graph/layout";
-import { parseDbtManifest, findManifestPath, parseDbtProjectFallback } from "./dbtParser";
+import { parseDbtManifest, findManifestPath, parseDbtProjectFallback, buildSqlContentMap } from "./dbtParser";
 import { parseAirflowDags, type ExternalSystemDetection } from "./airflowParser";
 import { parseExternalSystems, KNOWN_EXTERNAL_SYSTEMS } from "./externalParser";
+import { inferExternalSystems, summarizeDetections } from "./externalInference";
 import { linkCrossRepo } from "./linker";
 import { enrichWithSnowflakeMetadata } from "./snowflakeMetadata";
 import { inferGroups as aiInferGroups } from "../ai/grouping";
@@ -175,6 +176,9 @@ export class Indexer {
 
       // Stage 5: Parse external systems (exposures, config, detected from DAGs)
       await this.stageParseExternals();
+
+      // Stage 5.5: Infer external destinations from SQL patterns
+      await this.stageInferExternalDestinations();
 
       // Stage 6: Snowflake metadata (placeholder for now)
       await this.stageSnowflakeMetadata();
@@ -480,6 +484,77 @@ export class Indexer {
       "parse_externals",
       100,
       `Discovered ${externalNodesCount} external consumers with ${externalEdges} connections`
+    );
+  }
+
+  /**
+   * Infer external system destinations from SQL patterns, model names,
+   * column names, and macro usage. This creates edges from mart models
+   * to external systems like Outreach, Brevo, Salesforce, etc.
+   */
+  private async stageInferExternalDestinations(): Promise<void> {
+    this.updateProgress("parse_externals", 60, "Inferring external destinations from SQL patterns...");
+
+    // Build SQL content map for all dbt models
+    const sqlContentMap = buildSqlContentMap(this.allNodes, this.config.dbtPath);
+    
+    this.updateProgress("parse_externals", 65, `Loaded SQL content for ${sqlContentMap.size} models`);
+
+    // Create SQL lookup function
+    const getSqlContent = (node: GraphNode): string | null => {
+      return sqlContentMap.get(node.id) || null;
+    };
+
+    // Run inference
+    const inferenceResult = await inferExternalSystems(
+      this.allNodes,
+      getSqlContent,
+      (progress, message) => {
+        // Map 0-100 to 65-95
+        const mappedProgress = 65 + Math.round(progress * 0.30);
+        this.updateProgress("parse_externals", mappedProgress, message);
+      }
+    );
+
+    // Add new external nodes (deduplicating against existing)
+    const existingNodeIds = new Set(this.allNodes.map(n => n.id));
+    let newNodesCount = 0;
+    for (const node of inferenceResult.nodes) {
+      if (!existingNodeIds.has(node.id)) {
+        this.allNodes.push(node);
+        existingNodeIds.add(node.id);
+        newNodesCount++;
+      }
+    }
+
+    // Add new edges (deduplicating by from+to combination)
+    const existingEdgeKeys = new Set(this.allEdges.map(e => `${e.from}|${e.to}`));
+    let newEdgesCount = 0;
+    for (const edge of inferenceResult.edges) {
+      const key = `${edge.from}|${edge.to}`;
+      if (!existingEdgeKeys.has(key)) {
+        this.allEdges.push(edge);
+        existingEdgeKeys.add(key);
+        newEdgesCount++;
+      }
+    }
+
+    // Add citations
+    this.allCitations.push(...inferenceResult.citations);
+
+    // Log summary
+    const summary = summarizeDetections(inferenceResult);
+    if (newNodesCount > 0 || newEdgesCount > 0) {
+      this.log(`Inferred ${newNodesCount} external systems, ${newEdgesCount} destination edges`);
+      if (summary) {
+        this.log(`External systems: ${summary}`);
+      }
+    }
+
+    this.updateProgress(
+      "parse_externals",
+      98,
+      `Inferred ${newNodesCount} external destinations with ${newEdgesCount} edges`
     );
   }
 

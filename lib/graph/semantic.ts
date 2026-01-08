@@ -155,11 +155,12 @@ export function computeImportanceScores(
     const minDirection = Math.min(conn.upstreamCount, conn.downstreamCount);
     const hubBonus = (minDirection / maxConnections) * 0.25;
 
-    // Semantic bonus: marts and reports are more important (0-0.25)
+    // Semantic bonus: marts, reports, and external systems are more important (0-0.25)
     const semanticLayer = classifySemanticLayer(node);
     let semanticBonus = 0;
     if (semanticLayer === "mart") semanticBonus = 0.25;
     else if (semanticLayer === "report") semanticBonus = 0.2;
+    else if (semanticLayer === "external") semanticBonus = 0.15;
     else if (semanticLayer === "intermediate") semanticBonus = 0.1;
 
     const importanceScore = Math.min(1, baseScore + hubBonus + semanticBonus);
@@ -174,6 +175,9 @@ export function computeImportanceScores(
     }
     if (semanticLayer === "mart" || semanticLayer === "report") {
       reasons.push(`${semanticLayer.charAt(0).toUpperCase() + semanticLayer.slice(1)} table`);
+    }
+    if (semanticLayer === "external") {
+      reasons.push("External system");
     }
 
     results.push({

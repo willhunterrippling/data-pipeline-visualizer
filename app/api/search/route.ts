@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { searchNodes, getNodes } from "@/lib/db";
+import { searchNodes, getNodes, getDb, DbNode } from "@/lib/db";
 import type { GraphNode, NodeMetadata } from "@/lib/types";
 
 export async function GET(request: NextRequest) {
@@ -8,11 +8,29 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get("limit") || "50", 10);
 
   try {
-    let dbNodes;
+    let dbNodes: DbNode[];
+    const db = getDb();
 
     if (query && query.length >= 2) {
-      // Use FTS search
+      // Use FTS search for main results
       dbNodes = searchNodes(`${query}*`, limit);
+      
+      // FTS5 has issues matching external nodes (case sensitivity, tokenization)
+      // Supplement with direct LIKE search on external nodes to ensure they appear
+      const existingIds = new Set(dbNodes.map(n => n.id));
+      const externalMatches = db.prepare(`
+        SELECT * FROM nodes 
+        WHERE type = 'external' 
+        AND (name LIKE ? OR id LIKE ?)
+        LIMIT 10
+      `).all(`%${query}%`, `%${query}%`) as DbNode[];
+      
+      // Add external matches that weren't already found
+      for (const ext of externalMatches) {
+        if (!existingIds.has(ext.id)) {
+          dbNodes.push(ext);
+        }
+      }
     } else {
       // Return all nodes if no query
       dbNodes = getNodes().slice(0, limit);

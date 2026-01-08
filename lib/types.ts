@@ -13,7 +13,13 @@ export type NodeSubtype =
   | "analysis"
   | "ml_model"
   | "application"
-  | "reverse_etl";
+  | "reverse_etl"
+  // Fivetran/ETL source indicators
+  | "fivetran_source"
+  | "reverse_etl_destination"
+  // CRM and marketing platform types
+  | "crm"
+  | "marketing";
 
 // Semantic layer classification
 export type SemanticLayer = "source" | "staging" | "intermediate" | "mart" | "report" | "transform" | "external";
@@ -56,7 +62,7 @@ export interface ColumnInfo {
 }
 
 // Edge types
-export type EdgeType = "ref" | "source" | "sql_dependency" | "dag_edge" | "materialization" | "exposure";
+export type EdgeType = "ref" | "source" | "sql_dependency" | "dag_edge" | "materialization" | "exposure" | "inferred_exposure";
 
 export interface GraphEdge {
   id: string;

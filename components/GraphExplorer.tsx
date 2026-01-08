@@ -163,14 +163,19 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         }
         nodesByLayer.get(layer)!.push(node);
         
-        // Priority 1: Check if we have a cached position (regardless of layer change)
-        // When stretching exploration, layers shift but we want to preserve visual positions
+        // Priority 1: Check if we have a cached position AT THE SAME LAYER
+        // If layer changed, the node needs to be repositioned
         const cached = cache.get(node.id);
-        if (cached) {
-          // Use cached position - this preserves positions across updates even when layer changes
+        if (cached && cached.relativeLayer === layer) {
+          // Use cached position - layer matches, preserve visual position
           positions.set(node.id, { x: cached.x, y: cached.y });
         } 
-        // Priority 2: New node - needs computed position (ignore server position as it conflicts with cached layout)
+        // Priority 2: Use server-provided position if available (layer changed or no cache)
+        else if (node.layoutX !== undefined && node.layoutY !== undefined) {
+          positions.set(node.id, { x: node.layoutX, y: node.layoutY });
+          cache.set(node.id, { x: node.layoutX, y: node.layoutY, relativeLayer: layer });
+        }
+        // Priority 3: New node - needs computed position
         else {
           trulyNewNodesByLayer.get(layer)!.push(node);
         }

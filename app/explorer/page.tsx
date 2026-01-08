@@ -7,9 +7,10 @@ import SearchBar from "@/components/SearchBar";
 import DepthControl from "@/components/DepthControl";
 import OrientationHeader from "@/components/OrientationHeader";
 import EditFlowModal from "@/components/EditFlowModal";
+import CreateFlowModal from "@/components/CreateFlowModal";
 import type { GraphNode, GraphEdge, GraphFlow } from "@/lib/types";
 import type { GraphExplorerRef, VisibleNode } from "@/components/GraphExplorer";
-import type { VisibilityReason } from "@/lib/graph/visibility";
+import { type VisibilityReason } from "@/lib/graph/visibility";
 
 // Dynamically import GraphExplorer to avoid SSR issues with Cytoscape
 const GraphExplorer = dynamic(() => import("@/components/GraphExplorer"), {
@@ -171,6 +172,7 @@ function ExplorerContent() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [editFlowModalOpen, setEditFlowModalOpen] = useState(false);
+  const [createFlowModalOpen, setCreateFlowModalOpen] = useState(false);
 
   // Show toast notification
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
@@ -218,14 +220,14 @@ function ExplorerContent() {
           }
         }
         
-        // Set anchor: from URL, or auto-select first anchor from flow
+        // Set anchor: from URL, or use flow's actual anchor
         if (anchor) {
           setAnchorId(anchor);
         } else if (selectedFlow && selectedFlow.anchorNodes.length > 0) {
-          // Auto-select first anchor from the flow
-          const defaultAnchor = selectedFlow.anchorNodes[0];
-          if (data.nodes.some((n: GraphNode) => n.id === defaultAnchor)) {
-            setAnchorId(defaultAnchor);
+          // Use flow's actual anchor node (consistent with Edit Flow modal)
+          const flowAnchor = selectedFlow.anchorNodes[0];
+          if (data.nodes.some((n: GraphNode) => n.id === flowAnchor)) {
+            setAnchorId(flowAnchor);
           }
         }
         
@@ -257,10 +259,6 @@ function ExplorerContent() {
         if (focusId && focusId !== anchorId) {
           params.set("focusId", focusId);
         }
-
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'explorer/page.tsx:fetchLineage',message:'Fetching lineage',data:{anchorId:anchorId?.slice(-40),focusId:focusId?.slice(-40),upstreamDepth,downstreamDepth,hasFocus:!!focusId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H4,H5'})}).catch(()=>{});
-        // #endregion
 
         const res = await fetch(`/api/lineage/${encodeURIComponent(anchorId!)}?${params}`);
         if (!res.ok) throw new Error("Failed to load lineage");
@@ -363,9 +361,6 @@ function ExplorerContent() {
 
     // If clicking on a node in the lineage (not the anchor), stretch the view
     if (isNotAnchor && lineageData?.nodes.some(n => n.id === node.id)) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'explorer/page.tsx:handleNodeClick',message:'Setting focus for stretching',data:{clickedNodeId:node.id.slice(-40),anchorId:anchorId?.slice(-40),nodeLayer:nodeLayer},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H5'})}).catch(()=>{});
-      // #endregion
       // Set this node as the focus to stretch the exploration
       setFocusId(node.id);
     }
@@ -489,7 +484,7 @@ function ExplorerContent() {
     // Update the flow in the flows list
     setFlows((prev) => prev.map((f) => (f.id === updatedFlow.id ? updatedFlow : f)));
     
-    // If this is the current flow, update the anchor to the new one
+    // If this is the current flow, use the flow's actual anchor
     if (flowId === updatedFlow.id && updatedFlow.anchorNodes.length > 0) {
       const newAnchorId = updatedFlow.anchorNodes[0];
       setAnchorId(newAnchorId);
@@ -498,6 +493,23 @@ function ExplorerContent() {
     
     showToast("Flow anchor updated successfully");
   }, [flowId, updateUrl, showToast]);
+
+  // Handle flow creation from create modal
+  const handleFlowCreated = useCallback((newFlow: { id: string; name: string; memberCount: number }) => {
+    // Refresh flows list
+    fetch("/api/flows")
+      .then((res) => res.json())
+      .then((data) => {
+        setFlows(data.flows || []);
+        // Select the new flow
+        setFlowId(newFlow.id);
+        updateUrl(anchorId, newFlow.id);
+        showToast(`Created flow "${newFlow.name}" with ${newFlow.memberCount} nodes`);
+      })
+      .catch((err) => {
+        console.error("Failed to refresh flows:", err);
+      });
+  }, [anchorId, updateUrl, showToast]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -577,6 +589,13 @@ function ExplorerContent() {
         onUpdated={handleFlowUpdated}
       />
 
+      {/* Create Flow Modal */}
+      <CreateFlowModal
+        isOpen={createFlowModalOpen}
+        onClose={() => setCreateFlowModalOpen(false)}
+        onCreated={handleFlowCreated}
+      />
+
       {/* Header */}
       <header className="border-b border-white/10 bg-[#0a0a0f]/80 backdrop-blur-sm z-10">
         <div className="px-4 py-3 flex items-center justify-between">
@@ -599,14 +618,14 @@ function ExplorerContent() {
                 const newFlowId = e.target.value || null;
                 setFlowId(newFlowId);
                 
-                // Auto-select first anchor from the new flow
+                // Use flow's actual anchor node (consistent with Edit Flow modal)
                 const selectedFlow = newFlowId ? flows.find((f) => f.id === newFlowId) : null;
                 let newAnchorId = anchorId;
                 if (selectedFlow && selectedFlow.anchorNodes.length > 0) {
-                  const defaultAnchor = selectedFlow.anchorNodes[0];
-                  if (allNodes.some((n) => n.id === defaultAnchor)) {
-                    newAnchorId = defaultAnchor;
-                    setAnchorId(defaultAnchor);
+                  const flowAnchor = selectedFlow.anchorNodes[0];
+                  if (allNodes.some((n) => n.id === flowAnchor)) {
+                    newAnchorId = flowAnchor;
+                    setAnchorId(flowAnchor);
                   }
                 }
                 
@@ -634,6 +653,18 @@ function ExplorerContent() {
                 </svg>
               </button>
             )}
+            
+            {/* Create Flow Button */}
+            <button
+              onClick={() => setCreateFlowModalOpen(true)}
+              className="p-2 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-1.5"
+              title="Create new flow"
+            >
+              <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              <span className="text-sm text-white/60">New Flow</span>
+            </button>
           </div>
 
           <div className="flex items-center gap-4">

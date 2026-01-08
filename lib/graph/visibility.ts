@@ -59,6 +59,51 @@ export const PERFORMANCE_LIMITS = {
 };
 
 // ============================================================================
+// Default Node Selection
+// ============================================================================
+
+/**
+ * Find the best default node for a flow, biasing towards population tables.
+ * Population tables represent the entry point/starting population of a pipeline.
+ * 
+ * Priority order:
+ * 1. Population table matching flow name keywords
+ * 2. Any population table in the flow
+ * 3. Staging table matching flow name keywords
+ * 4. Fallback to first anchor node
+ */
+export function findDefaultNodeForFlow(
+  flow: GraphFlow,
+  allNodes: GraphNode[]
+): string | null {
+  const memberNodes = allNodes.filter(n => flow.memberNodes.includes(n.id));
+  const flowKeywords = flow.name.toLowerCase().split(/[\s_-]+/);
+  
+  // Priority 1: Population tables matching flow name
+  const populationMatch = memberNodes.find(n => 
+    n.name.toLowerCase().includes('_population') &&
+    flowKeywords.some(kw => kw.length > 2 && n.name.toLowerCase().includes(kw))
+  );
+  if (populationMatch) return populationMatch.id;
+  
+  // Priority 2: Any population table in the flow
+  const anyPopulation = memberNodes.find(n => 
+    n.name.toLowerCase().includes('_population')
+  );
+  if (anyPopulation) return anyPopulation.id;
+  
+  // Priority 3: Staging table matching flow name
+  const stagingMatch = memberNodes.find(n =>
+    n.name.toLowerCase().startsWith('stg_') &&
+    flowKeywords.some(kw => kw.length > 2 && n.name.toLowerCase().includes(kw))
+  );
+  if (stagingMatch) return stagingMatch.id;
+  
+  // Fallback: First anchor node
+  return flow.anchorNodes[0] ?? null;
+}
+
+// ============================================================================
 // Lineage Computation (BFS)
 // ============================================================================
 
@@ -104,56 +149,90 @@ export function computeLineage(
 
   // BFS for upstream nodes
   if (upstreamDepth > 0) {
-    const queue: LineageNode[] = [
-      { id: anchorId, hops: 0, path: [anchorId], direction: "upstream" },
-    ];
+    const queue: string[] = [anchorId];
     const visited = new Set<string>([anchorId]);
 
     while (queue.length > 0) {
-      const current = queue.shift()!;
-      if (current.hops >= upstreamDepth) continue;
+      const currentId = queue.shift()!;
+      // Look up CURRENT hops from lineage (may have been updated since queuing)
+      const currentHops = lineage.get(currentId)?.hops ?? 0;
 
-      const edges = upstreamEdges.get(current.id) || [];
+      const currentPath = lineage.get(currentId)?.path ?? [anchorId];
+      const edges = upstreamEdges.get(currentId) || [];
       for (const edge of edges) {
-        if (visited.has(edge.from)) continue;
-        visited.add(edge.from);
+        const existingNode = lineage.get(edge.from);
+        const newHops = currentHops + 1;
 
-        const node: LineageNode = {
-          id: edge.from,
-          hops: current.hops + 1,
-          path: [...current.path, edge.from],
-          direction: "upstream",
-        };
-        lineage.set(edge.from, node);
-        queue.push(node);
+        // Update hops if this path is longer (even for existing nodes)
+        // This ensures nodes with multiple children are placed at max(child layers) + 1
+        if (existingNode && newHops > existingNode.hops) {
+          // Update existing node's hops to the longer path
+          lineage.set(edge.from, {
+            ...existingNode,
+            hops: newHops,
+            path: [...currentPath, edge.from],
+          });
+        } else if (!existingNode && newHops <= upstreamDepth) {
+          // Only ADD new nodes if within depth limit
+          const node: LineageNode = {
+            id: edge.from,
+            hops: newHops,
+            path: [...currentPath, edge.from],
+            direction: "upstream",
+          };
+          lineage.set(edge.from, node);
+        }
+
+        // Add to queue if not yet queued (to process its edges for hop updates)
+        if (!visited.has(edge.from) && lineage.has(edge.from)) {
+          visited.add(edge.from);
+          queue.push(edge.from);
+        }
       }
     }
   }
 
   // BFS for downstream nodes
   if (downstreamDepth > 0) {
-    const queue: LineageNode[] = [
-      { id: anchorId, hops: 0, path: [anchorId], direction: "downstream" },
-    ];
+    const queue: string[] = [anchorId];
     const visited = new Set<string>([anchorId]);
 
     while (queue.length > 0) {
-      const current = queue.shift()!;
-      if (current.hops >= downstreamDepth) continue;
+      const currentId = queue.shift()!;
+      // Look up CURRENT hops from lineage (may have been updated since queuing)
+      const currentHops = lineage.get(currentId)?.hops ?? 0;
 
-      const edges = downstreamEdges.get(current.id) || [];
+      const currentPath = lineage.get(currentId)?.path ?? [anchorId];
+      const edges = downstreamEdges.get(currentId) || [];
       for (const edge of edges) {
-        if (visited.has(edge.to)) continue;
-        visited.add(edge.to);
+        const existingNode = lineage.get(edge.to);
+        const newHops = currentHops + 1;
 
-        const node: LineageNode = {
-          id: edge.to,
-          hops: current.hops + 1,
-          path: [...current.path, edge.to],
-          direction: "downstream",
-        };
-        lineage.set(edge.to, node);
-        queue.push(node);
+        // Update hops if this path is longer (even for existing nodes)
+        // This ensures nodes with multiple parents are placed at max(parent layers) + 1
+        if (existingNode && newHops > existingNode.hops) {
+          // Update existing node's hops to the longer path
+          lineage.set(edge.to, {
+            ...existingNode,
+            hops: newHops,
+            path: [...currentPath, edge.to],
+          });
+        } else if (!existingNode && newHops <= downstreamDepth) {
+          // Only ADD new nodes if within depth limit
+          const node: LineageNode = {
+            id: edge.to,
+            hops: newHops,
+            path: [...currentPath, edge.to],
+            direction: "downstream",
+          };
+          lineage.set(edge.to, node);
+        }
+
+        // Add to queue if not yet queued (to process its edges for hop updates)
+        if (!visited.has(edge.to) && lineage.has(edge.to)) {
+          visited.add(edge.to);
+          queue.push(edge.to);
+        }
       }
     }
   }
@@ -284,10 +363,6 @@ export function computeVisibility(
   let focusDirection: "upstream" | "downstream" | null = null;
 
   if (focusNode && state.focus !== state.anchor) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:291',message:'Stretching exploration started',data:{anchor:state.anchor,focus:state.focus,upstreamDepth:state.upstreamDepth,downstreamDepth:state.downstreamDepth},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1,H2'})}).catch(()=>{});
-    // #endregion
-    
     // Stretching exploration: find path from anchor to focus
     anchorToFocusPath = findPath(state.anchor!, state.focus!, "upstream") || [];
     if (anchorToFocusPath.length > 0) {
@@ -298,10 +373,6 @@ export function computeVisibility(
         focusDirection = "downstream";
       }
     }
-
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:307',message:'Path finding result',data:{anchorToFocusPathLength:anchorToFocusPath.length,focusDirection,pathNodes:anchorToFocusPath.slice(0,5)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1,H2'})}).catch(()=>{});
-    // #endregion
 
     if (focusDirection) {
       // STRETCHING: Compute lineage from BOTH anchor AND focus, then merge
@@ -344,15 +415,7 @@ export function computeVisibility(
           });
         }
       }
-      
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:merged',message:'Merged lineages',data:{anchorLineageSize:anchorLineage.size,focusLineageSize:focusLineage.size,mergedSize:lineage.size,focusHops},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H3'})}).catch(()=>{});
-      // #endregion
     } else {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:337',message:'Focus not reachable - fallback',data:{anchor:state.anchor,focus:state.focus},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H1,H2'})}).catch(()=>{});
-      // #endregion
-      
       // Focus not reachable from anchor, fall back to anchor-only exploration
       lineage = computeLineage(
         state.anchor!,
@@ -455,10 +518,6 @@ export function computeVisibility(
     visibleNodes.push(visibleNode);
     visibleNodeIds.add(nodeId);
   }
-
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:final',message:'Final visible nodes',data:{visibleCount:visibleNodes.length,layers:[...new Set(visibleNodes.map(n=>n.relativeLayer))].sort((a,b)=>a-b),sampleNodes:visibleNodes.slice(0,5).map(n=>({id:n.id.slice(-30),layer:n.relativeLayer}))},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H3,H4'})}).catch(()=>{});
-  // #endregion
 
   // Apply performance limits
   let finalNodes = visibleNodes;

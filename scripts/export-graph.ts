@@ -16,6 +16,10 @@
  *   OPENAI_API_KEY              Required for AI generation
  */
 
+// Load environment variables from .env.local (like Next.js does)
+import { loadEnvConfig } from "@next/env";
+loadEnvConfig(process.cwd());
+
 import Database from "better-sqlite3";
 import { writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
@@ -353,22 +357,15 @@ async function generateFlowExplanations(
   return { explanations: newExplanations, relationalExplanations: newRelExplanations };
 }
 
-// Convert DbNode to GraphNode format for AI functions
-interface GraphNode {
-  id: string;
-  name: string;
-  type: string;
-  subtype?: string;
-  repo?: string;
-  metadata?: Record<string, unknown>;
-}
+// Import types from lib/types.ts for AI functions
+import type { GraphNode, NodeType, NodeSubtype } from "../lib/types";
 
 function dbNodeToGraphNode(dbNode: DbNode): GraphNode {
   return {
     id: dbNode.id,
     name: dbNode.name,
-    type: dbNode.type,
-    subtype: dbNode.subtype || undefined,
+    type: dbNode.type as NodeType,
+    subtype: (dbNode.subtype || undefined) as NodeSubtype | undefined,
     repo: dbNode.repo || undefined,
     metadata: dbNode.metadata ? JSON.parse(dbNode.metadata) : undefined,
   };

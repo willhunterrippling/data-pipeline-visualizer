@@ -142,7 +142,7 @@ export async function runAgent(
       messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
       tools: TOOL_DEFINITIONS,
       tool_choice: "auto",
-      max_tokens: 4096,
+      max_completion_tokens: 4096,
     });
 
     const choice = response.choices[0];
@@ -274,7 +274,7 @@ export async function simpleComplete(
   const response = await client.chat.completions.create({
     model,
     messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    max_tokens: 2048,
+      max_completion_tokens: 2048,
   });
 
   return response.choices[0]?.message?.content || "";
@@ -383,7 +383,7 @@ Example good responses:
     const stream = await client.chat.completions.create({
       model,
       messages: [{ role: "user", content: reasoningPrompt }],
-      max_tokens: 150,
+      max_completion_tokens: 150,
       stream: true,
     });
 
@@ -461,7 +461,7 @@ Be conversational. Examples:
     const stream = await client.chat.completions.create({
       model,
       messages: [{ role: "user", content: reflectionPrompt }],
-      max_tokens: 150,
+      max_completion_tokens: 150,
       stream: true,
     });
 
@@ -529,7 +529,7 @@ export async function* runAgentStream(
         messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         tools: TOOL_DEFINITIONS,
         tool_choice: "auto",
-        max_tokens: 4096,
+        max_completion_tokens: 4096,
       });
 
       const choice = response.choices[0];
@@ -687,7 +687,7 @@ export async function* runAgentStream(
             content: "You've gathered enough information. Please provide your final answer now based on everything you've found. Do not request more tool calls.",
           },
         ],
-        max_tokens: 4096,
+        max_completion_tokens: 4096,
         stream: true,
       });
       

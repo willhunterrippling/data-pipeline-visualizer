@@ -156,3 +156,67 @@ export interface GraphArtifact {
   generatedAt: string;
 }
 
+// ============================================================================
+// Chat Types (Agentic Pipeline Chat)
+// ============================================================================
+
+export type ChatMessageRole = "user" | "assistant" | "system";
+
+export interface ChatMessage {
+  id: string;
+  role: ChatMessageRole;
+  content: string;
+  timestamp: string;
+  // For assistant messages, may include proposed actions
+  actions?: ProposedAction[];
+  // For transparency, show which tools were used
+  toolCalls?: ToolCallLog[];
+}
+
+export type ProposedActionType = 
+  | "navigate_to_node" 
+  | "set_anchor" 
+  | "select_flow" 
+  | "create_flow";
+
+export interface ProposedAction {
+  type: ProposedActionType;
+  label: string;
+  // Payload varies by type:
+  // - navigate_to_node: { nodeId: string }
+  // - set_anchor: { nodeId: string }
+  // - select_flow: { flowId: string }
+  // - create_flow: { name: string, anchorNodeId: string }
+  payload: Record<string, string>;
+}
+
+export interface ToolCallLog {
+  toolName: string;
+  args: Record<string, unknown>;
+  result: string; // Summarized result for display
+  durationMs: number;
+}
+
+export interface ChatContext {
+  currentAnchorId?: string;
+  currentFlowId?: string;
+  currentFlowName?: string;
+}
+
+export interface AgentResponse {
+  message: string;
+  actions?: ProposedAction[];
+  toolCalls?: ToolCallLog[];
+}
+
+export interface ChatRequest {
+  message: string;
+  conversationHistory: ChatMessage[];
+  context: ChatContext;
+}
+
+export interface ChatResponse {
+  response: AgentResponse;
+  messageId: string;
+}
+

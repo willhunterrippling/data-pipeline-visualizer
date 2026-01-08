@@ -7,10 +7,10 @@ import SearchBar from "@/components/SearchBar";
 import DepthControl from "@/components/DepthControl";
 import OrientationHeader from "@/components/OrientationHeader";
 import EditFlowModal from "@/components/EditFlowModal";
-import CreateFlowModal from "@/components/CreateFlowModal";
-import type { GraphNode, GraphEdge, GraphFlow } from "@/lib/types";
+import PipelineChat from "@/components/PipelineChat";
+import type { GraphNode, GraphEdge, GraphFlow, ProposedAction, ChatContext } from "@/lib/types";
 import type { GraphExplorerRef, VisibleNode } from "@/components/GraphExplorer";
-import { type VisibilityReason } from "@/lib/graph/visibility";
+import type { VisibilityReason } from "@/lib/graph/visibility";
 
 // Dynamically import GraphExplorer to avoid SSR issues with Cytoscape
 const GraphExplorer = dynamic(() => import("@/components/GraphExplorer"), {
@@ -138,11 +138,9 @@ interface LineageData {
 interface SidePanelData {
   node: GraphNode;
   explanation?: string;
-  relationalExplanation?: string;
   upstream: GraphNode[];
   downstream: GraphNode[];
   isLoadingExplanation: boolean;
-  isLoadingRelationalExplanation: boolean;
   visibilityReason?: string;
 }
 
@@ -172,7 +170,6 @@ function ExplorerContent() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [editFlowModalOpen, setEditFlowModalOpen] = useState(false);
-  const [createFlowModalOpen, setCreateFlowModalOpen] = useState(false);
 
   // Show toast notification
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
@@ -220,14 +217,14 @@ function ExplorerContent() {
           }
         }
         
-        // Set anchor: from URL, or use flow's actual anchor
+        // Set anchor: from URL, or auto-select first anchor from flow
         if (anchor) {
           setAnchorId(anchor);
         } else if (selectedFlow && selectedFlow.anchorNodes.length > 0) {
-          // Use flow's actual anchor node (consistent with Edit Flow modal)
-          const flowAnchor = selectedFlow.anchorNodes[0];
-          if (data.nodes.some((n: GraphNode) => n.id === flowAnchor)) {
-            setAnchorId(flowAnchor);
+          // Auto-select first anchor from the flow
+          const defaultAnchor = selectedFlow.anchorNodes[0];
+          if (data.nodes.some((n: GraphNode) => n.id === defaultAnchor)) {
+            setAnchorId(defaultAnchor);
           }
         }
         
@@ -260,6 +257,10 @@ function ExplorerContent() {
           params.set("focusId", focusId);
         }
 
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'explorer/page.tsx:fetchLineage',message:'Fetching lineage',data:{anchorId:anchorId?.slice(-40),focusId:focusId?.slice(-40),upstreamDepth,downstreamDepth,hasFocus:!!focusId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H4,H5'})}).catch(()=>{});
+        // #endregion
+
         const res = await fetch(`/api/lineage/${encodeURIComponent(anchorId!)}?${params}`);
         if (!res.ok) throw new Error("Failed to load lineage");
         
@@ -279,13 +280,12 @@ function ExplorerContent() {
     setFocusId(null); // Reset focus when selecting new anchor
     updateUrl(node.id, flowId);
     
-    // Also show in side panel (no relational explanation for anchor itself)
+    // Also show in side panel
     setSidePanel({
       node,
       upstream: [],
       downstream: [],
       isLoadingExplanation: true,
-      isLoadingRelationalExplanation: false,
     });
 
     // Focus on the node
@@ -303,7 +303,6 @@ function ExplorerContent() {
           upstream: data.upstream,
           downstream: data.downstream,
           isLoadingExplanation: !data.explanation,
-          isLoadingRelationalExplanation: false,
         });
 
         // Generate explanation if not cached
@@ -357,10 +356,12 @@ function ExplorerContent() {
     // Get visibility reason if available
     const visibilityReason = lineageData?.visibilityReasons[node.id]?.description;
     const nodeLayer = lineageData?.layers[node.id]?.layer;
-    const isNotAnchor = node.id !== anchorId;
 
     // If clicking on a node in the lineage (not the anchor), stretch the view
-    if (isNotAnchor && lineageData?.nodes.some(n => n.id === node.id)) {
+    if (node.id !== anchorId && lineageData?.nodes.some(n => n.id === node.id)) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'explorer/page.tsx:handleNodeClick',message:'Setting focus for stretching',data:{clickedNodeId:node.id.slice(-40),anchorId:anchorId?.slice(-40),nodeLayer:nodeLayer},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H5'})}).catch(()=>{});
+      // #endregion
       // Set this node as the focus to stretch the exploration
       setFocusId(node.id);
     }
@@ -370,7 +371,6 @@ function ExplorerContent() {
       upstream: [],
       downstream: [],
       isLoadingExplanation: true,
-      isLoadingRelationalExplanation: isNotAnchor && !!anchorId,
       visibilityReason,
     });
 
@@ -425,44 +425,6 @@ function ExplorerContent() {
             : null
         );
       });
-
-    // Fetch relational explanation if this is not the anchor and we have an anchor
-    if (isNotAnchor && anchorId) {
-      const relController = new AbortController();
-      const relTimeoutId = setTimeout(() => relController.abort(), 60000);
-
-      fetch("/api/explain-relationship", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nodeId: node.id, anchorId }),
-        signal: relController.signal,
-      })
-        .then((res) => res.json())
-        .then((relData) => {
-          setSidePanel((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  relationalExplanation: relData.explanation,
-                  isLoadingRelationalExplanation: false,
-                }
-              : null
-          );
-        })
-        .catch((err) => {
-          console.error("Failed to generate relational explanation:", err);
-          setSidePanel((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  relationalExplanation: "Failed to generate relationship explanation.",
-                  isLoadingRelationalExplanation: false,
-                }
-              : null
-          );
-        })
-        .finally(() => clearTimeout(relTimeoutId));
-    }
   }, [lineageData, anchorId]);
 
   // Clear anchor and focus
@@ -484,7 +446,7 @@ function ExplorerContent() {
     // Update the flow in the flows list
     setFlows((prev) => prev.map((f) => (f.id === updatedFlow.id ? updatedFlow : f)));
     
-    // If this is the current flow, use the flow's actual anchor
+    // If this is the current flow, update the anchor to the new one
     if (flowId === updatedFlow.id && updatedFlow.anchorNodes.length > 0) {
       const newAnchorId = updatedFlow.anchorNodes[0];
       setAnchorId(newAnchorId);
@@ -494,22 +456,65 @@ function ExplorerContent() {
     showToast("Flow anchor updated successfully");
   }, [flowId, updateUrl, showToast]);
 
-  // Handle flow creation from create modal
-  const handleFlowCreated = useCallback((newFlow: { id: string; name: string; memberCount: number }) => {
-    // Refresh flows list
-    fetch("/api/flows")
-      .then((res) => res.json())
-      .then((data) => {
-        setFlows(data.flows || []);
-        // Select the new flow
-        setFlowId(newFlow.id);
-        updateUrl(anchorId, newFlow.id);
-        showToast(`Created flow "${newFlow.name}" with ${newFlow.memberCount} nodes`);
-      })
-      .catch((err) => {
-        console.error("Failed to refresh flows:", err);
-      });
-  }, [anchorId, updateUrl, showToast]);
+  // Handle chat actions
+  const handleChatAction = useCallback((action: ProposedAction) => {
+    switch (action.type) {
+      case "navigate_to_node": {
+        const nodeId = action.payload.nodeId;
+        const node = allNodes.find((n) => n.id === nodeId);
+        if (node) {
+          graphRef.current?.focusNode(nodeId);
+          handleNodeClick(node);
+        }
+        break;
+      }
+      case "set_anchor": {
+        const nodeId = action.payload.nodeId;
+        const node = allNodes.find((n) => n.id === nodeId);
+        if (node) {
+          handleSelectAnchor(node);
+        }
+        break;
+      }
+      case "select_flow": {
+        const newFlowId = action.payload.flowId;
+        const selectedFlow = flows.find((f) => f.id === newFlowId);
+        if (selectedFlow) {
+          setFlowId(newFlowId);
+          // Auto-select first anchor from the flow
+          if (selectedFlow.anchorNodes.length > 0) {
+            const defaultAnchor = selectedFlow.anchorNodes[0];
+            if (allNodes.some((n) => n.id === defaultAnchor)) {
+              setAnchorId(defaultAnchor);
+              updateUrl(defaultAnchor, newFlowId);
+            }
+          }
+        }
+        break;
+      }
+      case "create_flow": {
+        // For now, just set the node as anchor
+        // In the future, this could open a "create flow" modal
+        const nodeId = action.payload.anchorNodeId;
+        const node = allNodes.find((n) => n.id === nodeId);
+        if (node) {
+          handleSelectAnchor(node);
+          showToast("Set as anchor. Create flow feature coming soon!");
+        }
+        break;
+      }
+    }
+  }, [allNodes, flows, handleNodeClick, handleSelectAnchor, updateUrl, showToast]);
+
+  // Build chat context
+  const chatContext: ChatContext = useMemo(() => {
+    const flow = flowId ? flows.find((f) => f.id === flowId) : null;
+    return {
+      currentAnchorId: anchorId || undefined,
+      currentFlowId: flowId || undefined,
+      currentFlowName: flow?.name,
+    };
+  }, [anchorId, flowId, flows]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -589,13 +594,6 @@ function ExplorerContent() {
         onUpdated={handleFlowUpdated}
       />
 
-      {/* Create Flow Modal */}
-      <CreateFlowModal
-        isOpen={createFlowModalOpen}
-        onClose={() => setCreateFlowModalOpen(false)}
-        onCreated={handleFlowCreated}
-      />
-
       {/* Header */}
       <header className="border-b border-white/10 bg-[#0a0a0f]/80 backdrop-blur-sm z-10">
         <div className="px-4 py-3 flex items-center justify-between">
@@ -618,14 +616,14 @@ function ExplorerContent() {
                 const newFlowId = e.target.value || null;
                 setFlowId(newFlowId);
                 
-                // Use flow's actual anchor node (consistent with Edit Flow modal)
+                // Auto-select first anchor from the new flow
                 const selectedFlow = newFlowId ? flows.find((f) => f.id === newFlowId) : null;
                 let newAnchorId = anchorId;
                 if (selectedFlow && selectedFlow.anchorNodes.length > 0) {
-                  const flowAnchor = selectedFlow.anchorNodes[0];
-                  if (allNodes.some((n) => n.id === flowAnchor)) {
-                    newAnchorId = flowAnchor;
-                    setAnchorId(flowAnchor);
+                  const defaultAnchor = selectedFlow.anchorNodes[0];
+                  if (allNodes.some((n) => n.id === defaultAnchor)) {
+                    newAnchorId = defaultAnchor;
+                    setAnchorId(defaultAnchor);
                   }
                 }
                 
@@ -653,18 +651,6 @@ function ExplorerContent() {
                 </svg>
               </button>
             )}
-            
-            {/* Create Flow Button */}
-            <button
-              onClick={() => setCreateFlowModalOpen(true)}
-              className="p-2 hover:bg-white/10 rounded-lg transition-colors flex items-center gap-1.5"
-              title="Create new flow"
-            >
-              <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-              <span className="text-sm text-white/60">New Flow</span>
-            </button>
           </div>
 
           <div className="flex items-center gap-4">
@@ -797,34 +783,6 @@ function ExplorerContent() {
                 )}
               </div>
 
-              {/* Relationship to Anchor - only show for non-anchor nodes */}
-              {sidePanel.node.id !== anchorId && anchorId && (
-                <div>
-                  <h3 className="text-sm font-medium text-white/60 mb-2 flex items-center gap-2">
-                    <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                    </svg>
-                    Relationship to Anchor
-                  </h3>
-                  {sidePanel.isLoadingRelationalExplanation ? (
-                    <div className="flex items-center gap-2 text-sm text-white/40">
-                      <div className="w-4 h-4 border-2 border-white/20 border-t-purple-400 rounded-full animate-spin" />
-                      Analyzing relationship...
-                    </div>
-                  ) : sidePanel.relationalExplanation ? (
-                    <div className="bg-purple-500/10 border border-purple-500/20 rounded-lg p-3">
-                      <MarkdownContent 
-                        content={sidePanel.relationalExplanation}
-                        nodes={allNodes}
-                        onNodeClick={handleSelectAnchor}
-                      />
-                    </div>
-                  ) : (
-                    <p className="text-sm text-white/40 italic">No relationship information available.</p>
-                  )}
-                </div>
-              )}
-
               {/* Upstream */}
               {sidePanel.upstream.length > 0 && (
                 <div>
@@ -891,6 +849,13 @@ function ExplorerContent() {
           </div>
         )}
       </div>
+
+      {/* Pipeline Chat */}
+      <PipelineChat
+        context={chatContext}
+        onAction={handleChatAction}
+        allNodes={allNodes}
+      />
     </div>
   );
 }

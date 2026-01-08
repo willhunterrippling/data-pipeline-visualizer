@@ -2,10 +2,14 @@ import OpenAI from "openai";
 
 let openai: OpenAI | null = null;
 
+// Default timeout for API calls (55 seconds - slightly less than typical serverless timeout)
+const API_TIMEOUT_MS = 55000;
+
 function getClient(): OpenAI {
   if (!openai) {
     openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
+      timeout: API_TIMEOUT_MS,
     });
   }
   return openai;
@@ -111,29 +115,37 @@ export async function complete(
     }
   }
 
-  const response = await client.chat.completions.create({
-    model,
-    messages: processedMessages.map((m) => ({
-      role: m.role === "system" && isO1 ? "user" : m.role,
-      content: m.content,
-    })),
-    max_completion_tokens: options?.maxTokens || 4096,
-  });
-
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'client.ts:120',message:'API response received',data:{hasChoices:!!response.choices,choicesLength:response.choices?.length,hasMessage:!!response.choices?.[0]?.message,contentLength:response.choices?.[0]?.message?.content?.length,contentPreview:response.choices?.[0]?.message?.content?.substring(0,200),finishReason:response.choices?.[0]?.finish_reason},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,D'})}).catch(()=>{});
-  // #endregion
-
-  // Track token usage
-  if (response.usage) {
-    sessionUsage.push({
-      inputTokens: response.usage.prompt_tokens,
-      outputTokens: response.usage.completion_tokens,
+  try {
+    const response = await client.chat.completions.create({
       model,
+      messages: processedMessages.map((m) => ({
+        role: m.role === "system" && isO1 ? "user" : m.role,
+        content: m.content,
+      })),
+      max_completion_tokens: options?.maxTokens || 4096,
     });
-  }
 
-  return response.choices[0]?.message?.content || "";
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'client.ts:120',message:'API response received',data:{hasChoices:!!response.choices,choicesLength:response.choices?.length,hasMessage:!!response.choices?.[0]?.message,contentLength:response.choices?.[0]?.message?.content?.length,contentPreview:response.choices?.[0]?.message?.content?.substring(0,200),finishReason:response.choices?.[0]?.finish_reason},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,D'})}).catch(()=>{});
+    // #endregion
+
+    // Track token usage
+    if (response.usage) {
+      sessionUsage.push({
+        inputTokens: response.usage.prompt_tokens,
+        outputTokens: response.usage.completion_tokens,
+        model,
+      });
+    }
+
+    return response.choices[0]?.message?.content || "";
+  } catch (error) {
+    // Check if it's a timeout error
+    if (error instanceof Error && (error.name === 'AbortError' || error.message.includes('timeout'))) {
+      throw new Error(`OpenAI API request timed out after ${API_TIMEOUT_MS / 1000}s`);
+    }
+    throw error;
+  }
 }
 
 /**

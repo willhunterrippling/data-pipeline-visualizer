@@ -6,6 +6,7 @@ import dynamic from "next/dynamic";
 import SearchBar from "@/components/SearchBar";
 import DepthControl from "@/components/DepthControl";
 import OrientationHeader from "@/components/OrientationHeader";
+import EditFlowModal from "@/components/EditFlowModal";
 import type { GraphNode, GraphEdge, GraphFlow } from "@/lib/types";
 import type { GraphExplorerRef, VisibleNode } from "@/components/GraphExplorer";
 import type { VisibilityReason } from "@/lib/graph/visibility";
@@ -123,14 +124,12 @@ interface LineageData {
   anchor: GraphNode;
   nodes: VisibleNode[];
   edges: GraphEdge[];
-  ghostNodes: VisibleNode[];
   layers: Record<string, { layer: number; name: string }>;
   smartLayerNames: Record<number, SmartLayerName>;
   visibilityReasons: Record<string, { reason: VisibilityReason; description: string }>;
   stats: {
     totalNodes: number;
     visibleNodes: number;
-    ghostNodes: number;
     layerRange: { min: number; max: number };
   };
 }
@@ -169,6 +168,7 @@ function ExplorerContent() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+  const [editFlowModalOpen, setEditFlowModalOpen] = useState(false);
 
   // Show toast notification
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
@@ -306,10 +306,14 @@ function ExplorerContent() {
 
         // Generate explanation if not cached
         if (!data.explanation) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
           fetch("/api/explain", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ nodeId: node.id }),
+            signal: controller.signal,
           })
             .then((res) => res.json())
             .then((explainData) => {
@@ -318,8 +322,25 @@ function ExplorerContent() {
                   ? { ...prev, explanation: explainData.explanation, isLoadingExplanation: false }
                   : null
               );
-            });
+            })
+            .catch((err) => {
+              console.error("Failed to generate explanation:", err);
+              setSidePanel((prev) =>
+                prev
+                  ? { ...prev, explanation: "Failed to generate explanation. Try again later.", isLoadingExplanation: false }
+                  : null
+              );
+            })
+            .finally(() => clearTimeout(timeoutId));
         }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch node details:", err);
+        setSidePanel((prev) =>
+          prev
+            ? { ...prev, isLoadingExplanation: false }
+            : null
+        );
       });
   }, [flowId, updateUrl]);
 
@@ -364,14 +385,46 @@ function ExplorerContent() {
           downstream: data.downstream,
           isLoadingExplanation: !data.explanation,
         }));
+
+        // Generate explanation if not cached
+        if (!data.explanation) {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
+          fetch("/api/explain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ nodeId: node.id }),
+            signal: controller.signal,
+          })
+            .then((res) => res.json())
+            .then((explainData) => {
+              setSidePanel((prev) =>
+                prev
+                  ? { ...prev, explanation: explainData.explanation, isLoadingExplanation: false }
+                  : null
+              );
+            })
+            .catch((err) => {
+              console.error("Failed to generate explanation:", err);
+              setSidePanel((prev) =>
+                prev
+                  ? { ...prev, explanation: "Failed to generate explanation. Try again later.", isLoadingExplanation: false }
+                  : null
+              );
+            })
+            .finally(() => clearTimeout(timeoutId));
+        }
+      })
+      .catch((err) => {
+        console.error("Failed to fetch node details:", err);
+        setSidePanel((prev) =>
+          prev
+            ? { ...prev, isLoadingExplanation: false }
+            : null
+        );
       });
   }, [lineageData, anchorId]);
-
-  // Handle ghost node click
-  const handleGhostNodeClick = useCallback((node: VisibleNode) => {
-    // Show options modal or expand to include
-    showToast(`${node.name} is outside the current flow`, "success");
-  }, [showToast]);
 
   // Clear anchor and focus
   const handleClearAnchor = useCallback(() => {
@@ -386,6 +439,21 @@ function ExplorerContent() {
     setFlowId(null);
     updateUrl(anchorId, null);
   }, [anchorId, updateUrl]);
+
+  // Handle flow update from edit modal
+  const handleFlowUpdated = useCallback((updatedFlow: GraphFlow) => {
+    // Update the flow in the flows list
+    setFlows((prev) => prev.map((f) => (f.id === updatedFlow.id ? updatedFlow : f)));
+    
+    // If this is the current flow, update the anchor to the new one
+    if (flowId === updatedFlow.id && updatedFlow.anchorNodes.length > 0) {
+      const newAnchorId = updatedFlow.anchorNodes[0];
+      setAnchorId(newAnchorId);
+      updateUrl(newAnchorId, flowId);
+    }
+    
+    showToast("Flow anchor updated successfully");
+  }, [flowId, updateUrl, showToast]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -456,6 +524,15 @@ function ExplorerContent() {
         </div>
       )}
 
+      {/* Edit Flow Modal */}
+      <EditFlowModal
+        isOpen={editFlowModalOpen}
+        flow={currentFlow || null}
+        allNodes={allNodes}
+        onClose={() => setEditFlowModalOpen(false)}
+        onUpdated={handleFlowUpdated}
+      />
+
       {/* Header */}
       <header className="border-b border-white/10 bg-[#0a0a0f]/80 backdrop-blur-sm z-10">
         <div className="px-4 py-3 flex items-center justify-between">
@@ -500,6 +577,19 @@ function ExplorerContent() {
                 </option>
               ))}
             </select>
+            
+            {/* Edit Flow Button */}
+            {flowId && (
+              <button
+                onClick={() => setEditFlowModalOpen(true)}
+                className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                title="Edit flow anchor"
+              >
+                <svg className="w-4 h-4 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-4">
@@ -539,12 +629,10 @@ function ExplorerContent() {
               ref={graphRef}
               nodes={lineageData.nodes}
               edges={lineageData.edges}
-              ghostNodes={lineageData.ghostNodes}
               anchorId={anchorId}
               layerRange={lineageData.stats.layerRange}
               smartLayerNames={lineageData.smartLayerNames}
               onNodeSelect={handleNodeClick}
-              onGhostNodeClick={handleGhostNodeClick}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center bg-[#0a0a0f]">

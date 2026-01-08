@@ -7,6 +7,7 @@ export interface AirflowParseResult {
   nodes: GraphNode[];
   edges: GraphEdge[];
   citations: Citation[];
+  externalSystems: ExternalSystemDetection[];
 }
 
 interface DagInfo {
@@ -22,6 +23,47 @@ interface TaskInfo {
   sqlPath?: string;
   upstreamTasks: string[];
 }
+
+// External system detection from DAG patterns
+export interface ExternalSystemDetection {
+  name: string;
+  type: "application" | "dashboard" | "reverse_etl";
+  detectedFrom: string; // file path
+  operator?: string;
+  consumesFrom: string[]; // table names that feed into this
+}
+
+// Known external operators and patterns
+const EXTERNAL_OPERATOR_PATTERNS: Array<{
+  pattern: RegExp;
+  name: string;
+  type: "application" | "dashboard" | "reverse_etl";
+}> = [
+  { pattern: /OutreachOperator/i, name: "Outreach.io Sequences", type: "application" },
+  { pattern: /BrevoOperator|SendinblueOperator/i, name: "Brevo Campaigns", type: "application" },
+  { pattern: /HightouchOperator/i, name: "Hightouch", type: "reverse_etl" },
+  { pattern: /CensusOperator/i, name: "Census", type: "reverse_etl" },
+  { pattern: /S3ToExternalOperator|S3Export/i, name: "S3 Export", type: "application" },
+  { pattern: /SalesforceOperator|SFDCOperator/i, name: "Salesforce", type: "application" },
+  { pattern: /SlackWebhookOperator/i, name: "Slack Notifications", type: "application" },
+  { pattern: /EmailOperator|SendEmailOperator/i, name: "Email Notifications", type: "application" },
+];
+
+// Patterns that indicate pushing data to external APIs
+const EXTERNAL_API_PATTERNS: Array<{
+  pattern: RegExp;
+  name: string;
+  type: "application" | "reverse_etl";
+}> = [
+  { pattern: /requests\.post\s*\([^)]*outreach/i, name: "Outreach.io API", type: "application" },
+  { pattern: /requests\.post\s*\([^)]*brevo|sendinblue/i, name: "Brevo API", type: "application" },
+  { pattern: /api\.outreach\.io/i, name: "Outreach.io API", type: "application" },
+  { pattern: /api\.brevo\.com|api\.sendinblue\.com/i, name: "Brevo API", type: "application" },
+  { pattern: /hightouch.*sync|sync.*hightouch/i, name: "Hightouch Sync", type: "reverse_etl" },
+  { pattern: /census.*sync|sync.*census/i, name: "Census Sync", type: "reverse_etl" },
+  { pattern: /push_to_sfdc|salesforce.*push|push.*salesforce/i, name: "Salesforce Push", type: "application" },
+  { pattern: /export_to_looker|looker.*export/i, name: "Looker Export", type: "dashboard" },
+];
 
 // Extract table references from SQL
 function extractTablesFromSql(sql: string): { tables: string[]; creates: string[] } {
@@ -73,6 +115,71 @@ function extractTablesFromSql(sql: string): { tables: string[]; creates: string[
   }
 
   return { tables, creates };
+}
+
+/**
+ * Detect external systems from a Python DAG file
+ */
+function detectExternalSystems(filePath: string, content: string): ExternalSystemDetection[] {
+  const detections: ExternalSystemDetection[] = [];
+  const seenSystems = new Set<string>();
+
+  // Check for external operators
+  for (const { pattern, name, type } of EXTERNAL_OPERATOR_PATTERNS) {
+    if (pattern.test(content) && !seenSystems.has(name)) {
+      seenSystems.add(name);
+      detections.push({
+        name,
+        type,
+        detectedFrom: filePath,
+        operator: pattern.source,
+        consumesFrom: [],
+      });
+    }
+  }
+
+  // Check for external API patterns
+  for (const { pattern, name, type } of EXTERNAL_API_PATTERNS) {
+    if (pattern.test(content) && !seenSystems.has(name)) {
+      seenSystems.add(name);
+      detections.push({
+        name,
+        type,
+        detectedFrom: filePath,
+        consumesFrom: [],
+      });
+    }
+  }
+
+  // Try to extract what tables are being read for these external pushes
+  // Look for patterns like: SELECT * FROM table, df.read_table('table'), etc.
+  if (detections.length > 0) {
+    // Find table references in the file that might be consumed
+    const tablePatterns = [
+      /read_table\s*\(\s*['"]([^'"]+)['"]/gi,
+      /query\s*=\s*['"]\s*SELECT.*FROM\s+([A-Z0-9_]+\.?[A-Z0-9_]+\.?[A-Z0-9_]+)/gi,
+      /table_name\s*=\s*['"]([^'"]+)['"]/gi,
+      /source_table\s*=\s*['"]([^'"]+)['"]/gi,
+    ];
+
+    const tables: string[] = [];
+    for (const pattern of tablePatterns) {
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        const table = match[1].toLowerCase();
+        if (!tables.includes(table)) {
+          tables.push(table);
+        }
+      }
+    }
+
+    // Add found tables to all detections
+    for (const detection of detections) {
+      detection.consumesFrom = tables;
+    }
+  }
+
+  return detections;
 }
 
 // Parse a Python DAG file to extract basic info
@@ -183,7 +290,9 @@ export async function parseAirflowDags(
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
   const citations: Citation[] = [];
+  const externalSystems: ExternalSystemDetection[] = [];
   const nodeMap = new Map<string, GraphNode>();
+  const seenExternalSystems = new Set<string>();
 
   const dagsDir = join(airflowPath, "airflow_dags", "dags");
   const resourcesDir = join(airflowPath, "airflow_dags", "resources");
@@ -269,10 +378,18 @@ export async function parseAirflowDags(
     }
   }
 
-  // Parse DAG files for orchestration edges
-  onProgress?.(90, "Parsing DAG dependencies...");
+  // Parse DAG files for orchestration edges and external system detection
+  onProgress?.(90, "Parsing DAG dependencies and detecting external systems...");
 
   for (const dagFile of dagFiles) {
+    // Read the file content for external system detection
+    let dagContent = "";
+    try {
+      dagContent = readFileSync(dagFile, "utf-8");
+    } catch {
+      continue;
+    }
+
     const dagInfo = parseDagFile(dagFile);
     if (!dagInfo) continue;
 
@@ -291,11 +408,32 @@ export async function parseAirflowDags(
         });
       }
     }
+
+    // Detect external systems in this DAG
+    const detected = detectExternalSystems(dagFile, dagContent);
+    for (const ext of detected) {
+      // Deduplicate by system name
+      if (!seenExternalSystems.has(ext.name)) {
+        seenExternalSystems.add(ext.name);
+        externalSystems.push(ext);
+      } else {
+        // Merge table references for existing system
+        const existing = externalSystems.find(e => e.name === ext.name);
+        if (existing) {
+          for (const table of ext.consumesFrom) {
+            if (!existing.consumesFrom.includes(table)) {
+              existing.consumesFrom.push(table);
+            }
+          }
+        }
+      }
+    }
   }
 
-  onProgress?.(100, `Parsed ${nodes.length} tables from Airflow`);
+  const externalCount = externalSystems.length;
+  onProgress?.(100, `Parsed ${nodes.length} tables, detected ${externalCount} external systems`);
 
-  return { nodes, edges, citations };
+  return { nodes, edges, citations, externalSystems };
 }
 
 // Normalize table names to FQN format

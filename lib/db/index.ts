@@ -535,19 +535,46 @@ export function getDownstreamNodes(nodeId: string, depth = 3): DbNode[] {
 }
 
 // Clear all data (for re-indexing) - but keep jobs for status tracking
-export function clearAllData() {
+// By default, preserves explanations since they're expensive to regenerate
+// Order matters due to foreign key constraints:
+// 1. Tables that reference nodes/edges must be deleted first
+// 2. Then edges (references nodes)
+// 3. Then nodes (references groups)
+// 4. Then groups and independent tables
+export function clearAllData(options?: { preserveExplanations?: boolean }) {
   const db = getDb();
-  db.exec(`
-    DELETE FROM explanations;
-    DELETE FROM citations;
-    DELETE FROM flows;
-    DELETE FROM groups;
-    DELETE FROM edges;
-    DELETE FROM nodes;
-    DELETE FROM lineage_cache;
-    DELETE FROM layer_names;
-    DELETE FROM anchor_candidates;
-  `);
+  const preserveExplanations = options?.preserveExplanations ?? true; // Default to preserving
+  
+  // Temporarily disable foreign key constraints to allow deletion with preserved explanations
+  // (explanations reference nodes, but we want to keep them for cache)
+  db.exec("PRAGMA foreign_keys = OFF");
+  
+  try {
+    db.exec(`
+      ${preserveExplanations ? '-- Preserving explanations' : 'DELETE FROM explanations;'}
+      DELETE FROM citations;
+      DELETE FROM anchor_candidates;
+      DELETE FROM lineage_cache;
+      DELETE FROM edges;
+      DELETE FROM nodes;
+      DELETE FROM groups;
+      DELETE FROM flows;
+      DELETE FROM layer_names;
+    `);
+  } finally {
+    // Re-enable foreign key constraints
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+// Clean up orphaned explanations (explanations for nodes that no longer exist)
+// Should be called after re-indexing is complete to remove stale explanations
+export function cleanupOrphanedExplanations(): number {
+  const db = getDb();
+  const result = db.prepare(`
+    DELETE FROM explanations WHERE node_id NOT IN (SELECT id FROM nodes)
+  `).run();
+  return result.changes;
 }
 
 // ============================================================================

@@ -40,9 +40,29 @@ interface DbtManifestSource {
   original_file_path?: string;
 }
 
+// dbt exposure types - for documenting downstream consumers
+interface DbtExposure {
+  unique_id: string;
+  name: string;
+  type: "dashboard" | "notebook" | "analysis" | "ml" | "application";
+  owner?: {
+    name?: string;
+    email?: string;
+  };
+  depends_on?: {
+    nodes?: string[];
+    macros?: string[];
+  };
+  url?: string;
+  description?: string;
+  maturity?: "high" | "medium" | "low";
+  original_file_path?: string;
+}
+
 interface DbtManifest {
   nodes: Record<string, DbtManifestNode>;
   sources: Record<string, DbtManifestSource>;
+  exposures?: Record<string, DbtExposure>;
   metadata: {
     project_name?: string;
     generated_at?: string;
@@ -204,6 +224,58 @@ export function parseDbtManifest(manifestPath: string, repoPath: string): DbtPar
         from: fromFqn,
         to: toFqn,
         type: edgeType,
+      });
+    }
+  }
+
+  // Parse exposures (downstream consumers like dashboards, apps, etc.)
+  for (const [exposureId, exposure] of Object.entries(manifest.exposures || {})) {
+    // Create a unique ID for the exposure (external system)
+    const exposureFqn = `external.${exposure.type}.${exposure.name.toLowerCase().replace(/\s+/g, "_")}`;
+    
+    // Map exposure type to subtype
+    const subtypeMap: Record<string, NodeSubtype> = {
+      dashboard: "dashboard",
+      notebook: "notebook",
+      analysis: "analysis",
+      ml: "ml_model",
+      application: "application",
+    };
+
+    const node: GraphNode = {
+      id: exposureFqn,
+      name: exposure.name,
+      type: "external",
+      subtype: subtypeMap[exposure.type] || "external_feed",
+      repo: "rippling-dbt",
+      metadata: {
+        description: exposure.description,
+        filePath: exposure.original_file_path,
+        tags: exposure.maturity ? [exposure.maturity] : undefined,
+      },
+    };
+    nodes.push(node);
+
+    // Add citation if we have a file path
+    if (exposure.original_file_path) {
+      citations.push({
+        id: uuid(),
+        nodeId: exposureFqn,
+        filePath: join(repoPath, exposure.original_file_path),
+      });
+    }
+
+    // Create edges FROM dependent models TO this exposure
+    const dependsOn = exposure.depends_on?.nodes || [];
+    for (const depId of dependsOn) {
+      const fromFqn = idToFqn.get(depId);
+      if (!fromFqn) continue;
+
+      edges.push({
+        id: uuid(),
+        from: fromFqn,
+        to: exposureFqn,
+        type: "exposure", // Models flow into exposures (downstream consumers)
       });
     }
   }

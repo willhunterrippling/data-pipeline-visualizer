@@ -86,14 +86,12 @@ export interface LineageResponse {
   anchor: GraphNode;
   nodes: Array<GraphNode & { visibilityReason: VisibilityReason; relativeLayer: number }>;
   edges: GraphEdge[];
-  ghostNodes: Array<GraphNode & { visibilityReason: VisibilityReason; relativeLayer: number }>;
   layers: Record<string, { layer: number; name: string }>;
   smartLayerNames: Record<number, SmartLayerName>;  // Smart names keyed by relative layer
   visibilityReasons: Record<string, { reason: VisibilityReason; description: string }>;
   stats: {
     totalNodes: number;
     visibleNodes: number;
-    ghostNodes: number;
     layerRange: { min: number; max: number };
   };
 }
@@ -186,12 +184,10 @@ export async function GET(
     // Compute local layout positions for the lineage subset
     // This creates compact positions based on relativeLayer instead of global positions
     const localVisibleNodes = computeLocalLayout(result.visibleNodes, result.layerRange);
-    const localGhostNodes = computeLocalLayout(result.ghostNodes, result.layerRange);
 
     // Compute smart layer names based on node prefixes
-    const allVisibleNodes = [...localVisibleNodes, ...localGhostNodes];
     const smartLayerNamesMap = computeSmartLayerNames(
-      allVisibleNodes.map(n => ({ id: n.id, name: n.name, relativeLayer: n.relativeLayer })),
+      localVisibleNodes.map(n => ({ id: n.id, name: n.name, relativeLayer: n.relativeLayer })),
       Math.max(Math.abs(result.layerRange.min), Math.abs(result.layerRange.max))
     );
 
@@ -201,19 +197,6 @@ export async function GET(
 
     // Process visible nodes - use smart layer names
     for (const node of localVisibleNodes) {
-      const smartName = smartLayerNamesMap.get(node.relativeLayer);
-      layers[node.id] = {
-        layer: node.relativeLayer,
-        name: smartName?.name || getRelativeLayerName(node.relativeLayer),
-      };
-      visibilityReasons[node.id] = {
-        reason: node.visibilityReason,
-        description: getVisibilityDescription(node.visibilityReason),
-      };
-    }
-
-    // Process ghost nodes - use smart layer names
-    for (const node of localGhostNodes) {
       const smartName = smartLayerNamesMap.get(node.relativeLayer);
       layers[node.id] = {
         layer: node.relativeLayer,
@@ -235,14 +218,12 @@ export async function GET(
       anchor: result.anchorNode!,
       nodes: localVisibleNodes,
       edges: result.visibleEdges,
-      ghostNodes: localGhostNodes,
       layers,
       smartLayerNames,
       visibilityReasons,
       stats: {
         totalNodes: allNodes.length,
         visibleNodes: result.visibleNodes.length,
-        ghostNodes: result.ghostNodes.length,
         layerRange: result.layerRange,
       },
     };

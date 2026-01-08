@@ -11,6 +11,7 @@ import {
   insertExplanation,
   updateJob,
   clearAllData,
+  cleanupOrphanedExplanations,
   updateGroupNodeCounts,
   appendActivityLog,
   updateUsageStats,
@@ -30,7 +31,8 @@ import {
   type IncrementalLayoutResult,
 } from "../graph/layout";
 import { parseDbtManifest, findManifestPath, parseDbtProjectFallback } from "./dbtParser";
-import { parseAirflowDags } from "./airflowParser";
+import { parseAirflowDags, type ExternalSystemDetection } from "./airflowParser";
+import { parseExternalSystems, KNOWN_EXTERNAL_SYSTEMS } from "./externalParser";
 import { linkCrossRepo } from "./linker";
 import { enrichWithSnowflakeMetadata } from "./snowflakeMetadata";
 import { inferGroups as aiInferGroups } from "../ai/grouping";
@@ -103,6 +105,9 @@ export class Indexer {
   // Previous layout data for incremental layout support
   private previousPositions: Map<string, NodePosition> = new Map();
   private previousEdgeCount: number = 0;
+  
+  // External systems detected from Airflow DAGs
+  private airflowExternalSystems: ExternalSystemDetection[] = [];
 
   constructor(jobId: string, config: IndexerConfig) {
     this.jobId = jobId;
@@ -168,7 +173,10 @@ export class Indexer {
       // Stage 4: Parse SQL (done within Airflow parsing)
       this.updateProgress("parse_sql", 100, "SQL dependencies extracted");
 
-      // Stage 5: Snowflake metadata (placeholder for now)
+      // Stage 5: Parse external systems (exposures, config, detected from DAGs)
+      await this.stageParseExternals();
+
+      // Stage 6: Snowflake metadata (placeholder for now)
       await this.stageSnowflakeMetadata();
 
       // Stage 6: Cross-repo linking
@@ -191,6 +199,12 @@ export class Indexer {
 
       // Stage 9: Pre-compute explanations
       await this.stagePrecomputeExplanations();
+
+      // Clean up orphaned explanations (from nodes that no longer exist)
+      const orphanedCount = cleanupOrphanedExplanations();
+      if (orphanedCount > 0) {
+        this.log(`Cleaned up ${orphanedCount} orphaned explanations`);
+      }
 
       // Store AI usage stats
       const usageStats = getAiUsageStats();
@@ -318,11 +332,17 @@ export class Indexer {
     this.allNodes.push(...result.nodes);
     this.allEdges.push(...result.edges);
     this.allCitations.push(...result.citations);
+    
+    // Store detected external systems for later processing
+    this.airflowExternalSystems = result.externalSystems;
 
+    const externalMsg = result.externalSystems.length > 0 
+      ? `, ${result.externalSystems.length} external systems detected` 
+      : "";
     this.updateProgress(
       "parse_airflow",
       100,
-      `Parsed ${result.nodes.length} Airflow tables, ${result.edges.length} DAG edges`
+      `Parsed ${result.nodes.length} Airflow tables, ${result.edges.length} DAG edges${externalMsg}`
     );
   }
 
@@ -344,6 +364,122 @@ export class Indexer {
       "snowflake_metadata",
       100,
       `Enriched ${result.enrichedCount} nodes with Snowflake metadata`
+    );
+  }
+
+  /**
+   * Parse external systems from multiple sources:
+   * 1. dbt exposures (already parsed in manifest stage)
+   * 2. Airflow DAG detection (already collected in Airflow stage)
+   * 3. externals.yml configuration file
+   */
+  private async stageParseExternals(): Promise<void> {
+    this.updateProgress("parse_externals", 0, "Discovering external data consumers...");
+
+    let externalNodesCount = 0;
+    let externalEdgesCount = 0;
+
+    // Count external nodes already added from dbt exposures
+    const existingExternalNodes = this.allNodes.filter(n => n.type === "external").length;
+    if (existingExternalNodes > 0) {
+      this.updateProgress("parse_externals", 20, `Found ${existingExternalNodes} external systems from dbt exposures`);
+      externalNodesCount += existingExternalNodes;
+    }
+
+    // Process Airflow-detected external systems
+    if (this.airflowExternalSystems.length > 0) {
+      this.updateProgress("parse_externals", 40, `Processing ${this.airflowExternalSystems.length} external systems from Airflow...`);
+      
+      // Build a lookup map for existing nodes by name
+      const nodesByName = new Map<string, GraphNode>();
+      for (const node of this.allNodes) {
+        nodesByName.set(node.name.toLowerCase(), node);
+      }
+
+      for (const ext of this.airflowExternalSystems) {
+        // Create external node ID
+        const externalId = `external.${ext.type}.${ext.name.toLowerCase().replace(/\s+/g, "_")}`;
+        
+        // Check if this external system already exists (from dbt exposures or config)
+        if (this.allNodes.some(n => n.id === externalId)) {
+          continue;
+        }
+
+        // Create the external node
+        const node: GraphNode = {
+          id: externalId,
+          name: ext.name,
+          type: "external",
+          subtype: ext.type === "reverse_etl" ? "reverse_etl" : 
+                   ext.type === "dashboard" ? "dashboard" : "application",
+          repo: "airflow-dags",
+          metadata: {
+            filePath: ext.detectedFrom,
+            description: `Auto-detected from Airflow DAG patterns`,
+          },
+        };
+        this.allNodes.push(node);
+        externalNodesCount++;
+
+        // Add citation
+        this.allCitations.push({
+          id: uuid(),
+          nodeId: externalId,
+          filePath: ext.detectedFrom,
+        });
+
+        // Create edges from consumed tables to this external system
+        for (const tableName of ext.consumesFrom) {
+          const sourceNode = nodesByName.get(tableName.toLowerCase());
+          if (sourceNode) {
+            this.allEdges.push({
+              id: uuid(),
+              from: sourceNode.id,
+              to: externalId,
+              type: "exposure",
+              metadata: {
+                transformationType: "airflow-detected",
+              },
+            });
+            externalEdgesCount++;
+          }
+        }
+      }
+    }
+
+    // Parse externals.yml configuration
+    this.updateProgress("parse_externals", 60, "Checking for externals.yml configuration...");
+    
+    const configResult = parseExternalSystems(
+      this.config.dbtPath,
+      this.allNodes,
+      (progress, message) => {
+        const mappedProgress = 60 + Math.round(progress * 0.3);
+        this.updateProgress("parse_externals", mappedProgress, message);
+      }
+    );
+
+    if (configResult.nodes.length > 0) {
+      // Deduplicate - only add nodes that don't already exist
+      for (const node of configResult.nodes) {
+        if (!this.allNodes.some(n => n.id === node.id)) {
+          this.allNodes.push(node);
+          externalNodesCount++;
+        }
+      }
+      
+      this.allEdges.push(...configResult.edges);
+      this.allCitations.push(...configResult.citations);
+      externalEdgesCount += configResult.edges.length;
+    }
+
+    // Count edges to external systems
+    const externalEdges = this.allEdges.filter(e => e.type === "exposure").length;
+
+    this.updateProgress(
+      "parse_externals",
+      100,
+      `Discovered ${externalNodesCount} external consumers with ${externalEdges} connections`
     );
   }
 

@@ -45,13 +45,11 @@ export interface VisibleNode extends GraphNode {
 interface GraphExplorerProps {
   nodes: VisibleNode[];
   edges: GraphEdge[];
-  ghostNodes?: VisibleNode[];
   anchorId?: string | null;
   layerRange: { min: number; max: number };
   smartLayerNames?: Record<number, SmartLayerName>;  // Smart layer names from API
   onNodeSelect?: (node: GraphNode | null) => void;
   onNodeDoubleClick?: (node: GraphNode) => void;
-  onGhostNodeClick?: (node: VisibleNode) => void;
 }
 
 // Color palette for different node types
@@ -104,13 +102,11 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
     {
       nodes,
       edges,
-      ghostNodes = [],
       anchorId,
       layerRange,
       smartLayerNames,
       onNodeSelect,
       onNodeDoubleClick,
-      onGhostNodeClick,
     },
     ref
   ) {
@@ -135,20 +131,16 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
 
     // Keep refs for stable access in event handlers
     const nodesRef = useRef(nodes);
-    const ghostNodesRef = useRef(ghostNodes);
     const smartLayerNamesRef = useRef(smartLayerNames);
     const onNodeSelectRef = useRef(onNodeSelect);
     const onNodeDoubleClickRef = useRef(onNodeDoubleClick);
-    const onGhostNodeClickRef = useRef(onGhostNodeClick);
 
     useEffect(() => {
       nodesRef.current = nodes;
-      ghostNodesRef.current = ghostNodes;
       smartLayerNamesRef.current = smartLayerNames;
       onNodeSelectRef.current = onNodeSelect;
       onNodeDoubleClickRef.current = onNodeDoubleClick;
-      onGhostNodeClickRef.current = onGhostNodeClick;
-    }, [nodes, ghostNodes, smartLayerNames, onNodeSelect, onNodeDoubleClick, onGhostNodeClick]);
+    }, [nodes, smartLayerNames, onNodeSelect, onNodeDoubleClick]);
 
     // Compute stable positions: preserve existing positions, only compute for truly new nodes
     // Priority: 1) Cached position at same layer, 2) Server-provided position, 3) Compute new position
@@ -310,9 +302,8 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
 
     // Compute stable positions for all nodes
     const stablePositions = useMemo(() => {
-      const allNodes = [...nodes, ...ghostNodes];
-      return computeStablePositions(allNodes, positionCacheRef.current, edges);
-    }, [nodes, ghostNodes, edges, computeStablePositions]);
+      return computeStablePositions(nodes, positionCacheRef.current, edges);
+    }, [nodes, edges, computeStablePositions]);
 
     // Build Cytoscape elements using stable cached positions
     const buildElements = useCallback(() => {
@@ -347,39 +338,8 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         });
       }
 
-      // Add ghost nodes (faded, outside flow)
-      for (const node of ghostNodes) {
-        const colors = NODE_COLORS[node.type] || NODE_COLORS.model;
-        
-        // Break label at __ for multi-line display
-        const label = node.name.replace(/__/g, '\n');
-        
-        // Use stable position from cache, fallback to server position
-        const pos = stablePositions.get(node.id) || { x: node.layoutX ?? 0, y: node.layoutY ?? 0 };
-
-        elements.push({
-          data: {
-            id: node.id,
-            label,
-            nodeType: node.type,
-            subtype: node.subtype,
-            relativeLayer: node.relativeLayer,
-            isGhost: true,
-            ...colors,
-          },
-          position: {
-            x: pos.x,
-            y: pos.y,
-          },
-          classes: "node-ghost",
-        });
-      }
-
       // Add edges
-      const allNodeIds = new Set([
-        ...nodes.map((n) => n.id),
-        ...ghostNodes.map((n) => n.id),
-      ]);
+      const allNodeIds = new Set(nodes.map((n) => n.id));
 
       for (const edge of edges) {
         if (allNodeIds.has(edge.from) && allNodeIds.has(edge.to)) {
@@ -396,7 +356,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       }
 
       return elements;
-    }, [nodes, edges, ghostNodes, anchorId, stablePositions]);
+    }, [nodes, edges, anchorId, stablePositions]);
 
     // Draw swimlane backgrounds
     const drawSwimlanes = useCallback(() => {
@@ -544,14 +504,6 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
               "underlay-shape": "round-rectangle",
             },
           },
-          // Ghost nodes (outside flow)
-          {
-            selector: ".node-ghost",
-            style: {
-              opacity: 0.3,
-              "border-style": "dashed",
-            },
-          },
           // Edge styles
           {
             selector: "edge",
@@ -639,7 +591,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       containerRef.current?.appendChild(tooltip);
 
       // Event handlers
-      cy.on("tap", "node:not(.node-ghost)", (evt) => {
+      cy.on("tap", "node", (evt) => {
         const node = evt.target as NodeSingular;
         const currentNodes = nodesRef.current;
         const nodeData = currentNodes.find((n) => n.id === node.id());
@@ -656,17 +608,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         neighborhood.removeClass("dimmed").addClass("highlighted");
       });
 
-      // Ghost node click
-      cy.on("tap", ".node-ghost", (evt) => {
-        const node = evt.target as NodeSingular;
-        const currentGhostNodes = ghostNodesRef.current;
-        const nodeData = currentGhostNodes.find((n) => n.id === node.id());
-        if (nodeData) {
-          onGhostNodeClickRef.current?.(nodeData);
-        }
-      });
-
-      cy.on("dbltap", "node:not(.node-ghost)", (evt) => {
+      cy.on("dbltap", "node", (evt) => {
         const node = evt.target as NodeSingular;
         const currentNodes = nodesRef.current;
         const nodeData = currentNodes.find((n) => n.id === node.id());
@@ -699,9 +641,6 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
           const smartName = smartLayerNamesRef.current?.[data.relativeLayer];
           const layerName = smartName?.name || getLayerName(data.relativeLayer);
           content += `<br/>Layer: ${layerName} (${data.relativeLayer})`;
-        }
-        if (data.isGhost) {
-          content += `<br/><em style="color: #fbbf24">Outside current flow</em>`;
         }
 
         tooltip.innerHTML = content;
@@ -994,10 +933,6 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
               }} 
             />
             <span className="text-red-300">Selected</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded border border-dashed border-white/40 opacity-40" />
-            <span className="text-white/70">Ghost (outside flow)</span>
           </div>
         </div>
 

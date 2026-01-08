@@ -1,6 +1,19 @@
 // Node types
 export type NodeType = "table" | "view" | "model" | "source" | "seed" | "external";
-export type NodeSubtype = "dbt_model" | "dbt_source" | "dbt_seed" | "airflow_table" | "snowflake_native" | "external_feed";
+export type NodeSubtype = 
+  | "dbt_model" 
+  | "dbt_source" 
+  | "dbt_seed" 
+  | "airflow_table" 
+  | "snowflake_native" 
+  | "external_feed"
+  // External system subtypes (from dbt exposures and external config)
+  | "dashboard"
+  | "notebook"
+  | "analysis"
+  | "ml_model"
+  | "application"
+  | "reverse_etl";
 
 // Semantic layer classification
 export type SemanticLayer = "source" | "staging" | "intermediate" | "mart" | "report" | "transform" | "external";
@@ -43,7 +56,7 @@ export interface ColumnInfo {
 }
 
 // Edge types
-export type EdgeType = "ref" | "source" | "sql_dependency" | "dag_edge" | "materialization";
+export type EdgeType = "ref" | "source" | "sql_dependency" | "dag_edge" | "materialization" | "exposure";
 
 export interface GraphEdge {
   id: string;
@@ -117,9 +130,10 @@ export const INDEXING_STAGES = [
   { id: "dbt_compile", name: "Compiling dbt project", startPct: 0, endPct: 10 },
   { id: "parse_manifest", name: "Parsing dbt manifest", startPct: 10, endPct: 25 },
   { id: "parse_airflow", name: "Parsing Airflow DAGs", startPct: 25, endPct: 40 },
-  { id: "parse_sql", name: "Extracting SQL dependencies", startPct: 40, endPct: 50 },
-  { id: "snowflake_metadata", name: "Fetching Snowflake metadata", startPct: 50, endPct: 60 },
-  { id: "cross_repo_link", name: "Linking & layout", startPct: 60, endPct: 75 },
+  { id: "parse_sql", name: "Extracting SQL dependencies", startPct: 40, endPct: 48 },
+  { id: "parse_externals", name: "Discovering external consumers", startPct: 48, endPct: 55 },
+  { id: "snowflake_metadata", name: "Fetching Snowflake metadata", startPct: 55, endPct: 62 },
+  { id: "cross_repo_link", name: "Linking & layout", startPct: 62, endPct: 75 },
   { id: "ai_grouping", name: "Semantic classification & layer naming", startPct: 75, endPct: 90 },
   { id: "ai_flows", name: "AI: Proposing flows", startPct: 90, endPct: 95 },
   { id: "precompute_explanations", name: "Pre-computing explanations", startPct: 95, endPct: 100 },

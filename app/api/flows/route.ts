@@ -1,7 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
-import { getFlows, insertFlow, getNodes, getDb } from "@/lib/db";
+import { getFlows, insertFlow, getNodes, getDb, getNodeById } from "@/lib/db";
 import type { GraphFlow, GraphNode, NodeMetadata } from "@/lib/types";
+
+// Helper to build member nodes by traversing upstream from anchor
+export function buildFlowMembers(anchorNodeId: string, depth: number = 6): string[] {
+  const db = getDb();
+  const edges = db.prepare("SELECT from_node, to_node FROM edges").all() as Array<{
+    from_node: string;
+    to_node: string;
+  }>;
+
+  // Build upstream map
+  const upstreamMap = new Map<string, Set<string>>();
+  for (const edge of edges) {
+    if (!upstreamMap.has(edge.to_node)) {
+      upstreamMap.set(edge.to_node, new Set());
+    }
+    upstreamMap.get(edge.to_node)!.add(edge.from_node);
+  }
+
+  // Traverse upstream from anchor
+  const memberSet = new Set<string>();
+  
+  function getUpstream(nodeId: string, remainingDepth: number, visited: Set<string>): void {
+    if (remainingDepth === 0 || visited.has(nodeId)) return;
+    visited.add(nodeId);
+    memberSet.add(nodeId);
+
+    const upstream = upstreamMap.get(nodeId) || new Set();
+    for (const upId of upstream) {
+      getUpstream(upId, remainingDepth - 1, visited);
+    }
+  }
+
+  memberSet.add(anchorNodeId);
+  getUpstream(anchorNodeId, depth, new Set());
+
+  return [...memberSet];
+}
 
 // GET all flows
 export async function GET() {

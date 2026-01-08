@@ -29,8 +29,7 @@ export type VisibilityReason =
   | { type: "anchor" }
   | { type: "upstream"; hops: number; path: string[] }
   | { type: "downstream"; hops: number; path: string[] }
-  | { type: "flow_member"; flowName: string }
-  | { type: "ghost"; reason: string };
+  | { type: "flow_member"; flowName: string };
 
 export interface VisibleNode extends GraphNode {
   visibilityReason: VisibilityReason;
@@ -40,7 +39,6 @@ export interface VisibleNode extends GraphNode {
 export interface VisibilityResult {
   visibleNodes: VisibleNode[];
   visibleEdges: GraphEdge[];
-  ghostNodes: VisibleNode[];  // Nodes in lineage but outside flow
   anchorNode: GraphNode | null;
   layerRange: { min: number; max: number };
 }
@@ -184,7 +182,6 @@ export function computeVisibility(
     return {
       visibleNodes: [],
       visibleEdges: [],
-      ghostNodes: [],
       anchorNode: null,
       layerRange: { min: 0, max: 0 },
     };
@@ -229,7 +226,6 @@ export function computeVisibility(
     return {
       visibleNodes,
       visibleEdges,
-      ghostNodes: [],
       anchorNode: null,
       layerRange: {
         min: Math.min(...layers, 0),
@@ -244,7 +240,6 @@ export function computeVisibility(
     return {
       visibleNodes: [],
       visibleEdges: [],
-      ghostNodes: [],
       anchorNode: null,
       layerRange: { min: 0, max: 0 },
     };
@@ -381,9 +376,8 @@ export function computeVisibility(
     );
   }
 
-  // Build visible nodes and ghost nodes
+  // Build visible nodes
   const visibleNodes: VisibleNode[] = [];
-  const ghostNodes: VisibleNode[] = [];
   const lineageNodeIds = new Set(lineage.keys());
   const visibleNodeIds = new Set<string>();
 
@@ -462,38 +456,8 @@ export function computeVisibility(
     visibleNodeIds.add(nodeId);
   }
 
-  // Ghost nodes: nodes that are in the flow but NOT in the current visible set
-  // This helps show what else is in the flow beyond the current view
-  if (state.flow && flowName) {
-    for (const nodeId of candidateNodeIds) {
-      // Skip if already visible
-      if (visibleNodeIds.has(nodeId)) continue;
-      
-      const node = nodeMap.get(nodeId);
-      if (!node) continue;
-
-      // Check if this node is connected to any visible node
-      const connectedToVisible = allEdges.some(
-        (e) =>
-          (e.from === nodeId && visibleNodeIds.has(e.to)) ||
-          (e.to === nodeId && visibleNodeIds.has(e.from))
-      );
-
-      if (connectedToVisible) {
-        ghostNodes.push({
-          ...node,
-          visibilityReason: {
-            type: "ghost",
-            reason: `In ${flowName} flow but beyond current depth`,
-          },
-          relativeLayer: node.layoutLayer ?? 0,
-        });
-      }
-    }
-  }
-
   // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:final',message:'Final visible nodes',data:{visibleCount:visibleNodes.length,ghostCount:ghostNodes.length,layers:[...new Set(visibleNodes.map(n=>n.relativeLayer))].sort((a,b)=>a-b),sampleNodes:visibleNodes.slice(0,5).map(n=>({id:n.id.slice(-30),layer:n.relativeLayer}))},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H3,H4'})}).catch(()=>{});
+  fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'visibility.ts:final',message:'Final visible nodes',data:{visibleCount:visibleNodes.length,layers:[...new Set(visibleNodes.map(n=>n.relativeLayer))].sort((a,b)=>a-b),sampleNodes:visibleNodes.slice(0,5).map(n=>({id:n.id.slice(-30),layer:n.relativeLayer}))},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H3,H4'})}).catch(()=>{});
   // #endregion
 
   // Apply performance limits
@@ -505,13 +469,10 @@ export function computeVisibility(
       .slice(0, PERFORMANCE_LIMITS.MAX_VISIBLE_NODES);
   }
 
-  // Compute visible edges (between all lineage nodes: visible + ghost)
-  const allLineageNodeIds = new Set([
-    ...finalNodes.map((n) => n.id),
-    ...ghostNodes.map((n) => n.id),
-  ]);
+  // Compute visible edges (between visible nodes only)
+  const finalNodeIds = new Set(finalNodes.map((n) => n.id));
   const visibleEdges = allEdges.filter(
-    (e) => allLineageNodeIds.has(e.from) && allLineageNodeIds.has(e.to)
+    (e) => finalNodeIds.has(e.from) && finalNodeIds.has(e.to)
   );
 
   // Compute layer range
@@ -524,7 +485,6 @@ export function computeVisibility(
   return {
     visibleNodes: finalNodes,
     visibleEdges,
-    ghostNodes: ghostNodes.slice(0, 50), // Limit ghost nodes too
     anchorNode,
     layerRange,
   };
@@ -543,8 +503,6 @@ export function getVisibilityDescription(reason: VisibilityReason): string {
       return `${reason.hops} hop${reason.hops > 1 ? "s" : ""} downstream`;
     case "flow_member":
       return `In ${reason.flowName} flow`;
-    case "ghost":
-      return reason.reason;
   }
 }
 

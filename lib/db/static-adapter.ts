@@ -10,11 +10,15 @@ import type {
   DbEdge,
   DbGroup,
   DbFlow,
+  DbCitation,
   DbExplanation,
   DbRelationalExplanation,
   DbLayerName,
   DbAnchorCandidate,
+  DbJob,
   LayoutPosition,
+  ActivityLogEntry,
+  UsageStats,
 } from "./index";
 
 // Path to the exported JSON file
@@ -206,7 +210,7 @@ export function getNodesWithLayout(): DbNode[] {
   return loadData().nodes.filter((n) => n.layout_x !== null);
 }
 
-export function getCitationsForNode(_nodeId: string): never[] {
+export function getCitationsForNode(_nodeId: string): DbCitation[] {
   // Citations are not exported to JSON (they contain file paths)
   return [];
 }
@@ -303,27 +307,27 @@ export function closeDb(): void {
   // No-op in static mode
 }
 
-export function insertNode(): never {
+export function insertNode(_node: Omit<DbNode, "created_at">): never {
   throwReadOnly();
 }
 
-export function insertNodes(): never {
+export function insertNodes(_nodes: Omit<DbNode, "created_at">[]): never {
   throwReadOnly();
 }
 
-export function insertEdge(): never {
+export function insertEdge(_edge: DbEdge): never {
   throwReadOnly();
 }
 
-export function insertEdges(): never {
+export function insertEdges(_edges: DbEdge[]): never {
   throwReadOnly();
 }
 
-export function insertGroup(): never {
+export function insertGroup(_group: Omit<DbGroup, "node_count">): never {
   throwReadOnly();
 }
 
-export function insertGroups(): never {
+export function insertGroups(_groups: Omit<DbGroup, "node_count">[]): never {
   throwReadOnly();
 }
 
@@ -335,19 +339,19 @@ export function updateNodeLayouts(_positions: LayoutPosition[]): never {
   throwReadOnly();
 }
 
-export function updateNodeSemanticLayers(): never {
+export function updateNodeSemanticLayers(_updates: Array<{ nodeId: string; semanticLayer: string }>): never {
   throwReadOnly();
 }
 
-export function updateNodeImportanceScores(): never {
+export function updateNodeImportanceScores(_updates: Array<{ nodeId: string; importanceScore: number }>): never {
   throwReadOnly();
 }
 
-export function insertLayerNames(): never {
+export function insertLayerNames(_layerNames: DbLayerName[]): never {
   throwReadOnly();
 }
 
-export function insertAnchorCandidates(): never {
+export function insertAnchorCandidates(_candidates: DbAnchorCandidate[]): never {
   throwReadOnly();
 }
 
@@ -357,11 +361,11 @@ export function insertFlow(flow: DbFlow): void {
   flowMap?.set(flow.id, flow);
 }
 
-export function insertCitation(): never {
+export function insertCitation(_citation: DbCitation): never {
   throwReadOnly();
 }
 
-export function insertCitations(): never {
+export function insertCitations(_citations: DbCitation[]): never {
   throwReadOnly();
 }
 
@@ -377,35 +381,38 @@ export function insertRelationalExplanation(explanation: DbRelationalExplanation
   relationalExplanationMap?.set(`${explanation.node_id}:${explanation.anchor_id}`, explanation);
 }
 
-export function createJob(): never {
-  throwReadOnly();
+export function createJob(_id: string): DbJob {
+  throw new Error("Job creation is not available in static mode");
 }
 
-export function updateJob(): never {
-  throwReadOnly();
+export function updateJob(
+  _id: string,
+  _update: Partial<Pick<DbJob, "status" | "stage" | "stage_progress" | "message" | "error">>
+): void {
+  // No-op in static mode
 }
 
-export function getJob(): undefined {
+export function getJob(_id: string): DbJob | undefined {
   return undefined;
 }
 
-export function appendActivityLog(): void {
+export function appendActivityLog(_id: string, _message: string): void {
   // No-op
 }
 
-export function getActivityLog(): never[] {
+export function getActivityLog(_id: string): ActivityLogEntry[] {
   return [];
 }
 
-export function updateUsageStats(): void {
+export function updateUsageStats(_id: string, _stats: UsageStats): void {
   // No-op
 }
 
-export function getUsageStats(): null {
+export function getUsageStats(_id: string): UsageStats | null {
   return null;
 }
 
-export function clearAllData(): never {
+export function clearAllData(_options?: { preserveExplanations?: boolean }): never {
   throwReadOnly();
 }
 
@@ -424,4 +431,3 @@ export function cleanupOrphanedRelationalExplanations(): number {
 export function isStaticMode(): boolean {
   return true;
 }
-

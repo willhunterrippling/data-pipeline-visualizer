@@ -1,6 +1,135 @@
 import { complete } from "./client";
-import type { GraphNode } from "../types";
+import type { GraphNode, NodeMetadata } from "../types";
 import { getModelSql } from "../indexer/dbtParser";
+
+export interface PathInfo {
+  direction: "upstream" | "downstream";
+  hops: number;
+  intermediateNodes: GraphNode[];
+}
+
+/**
+ * Database node interface for path finding
+ */
+interface DbNodeLike {
+  id: string;
+  name: string;
+  type: string;
+  subtype: string | null;
+  repo: string | null;
+  metadata: string | null;
+}
+
+/**
+ * Convert a database node to a GraphNode
+ */
+function dbNodeToGraphNode(dbNode: DbNodeLike): GraphNode {
+  return {
+    id: dbNode.id,
+    name: dbNode.name,
+    type: dbNode.type as GraphNode["type"],
+    subtype: dbNode.subtype as GraphNode["subtype"],
+    repo: dbNode.repo || undefined,
+    metadata: dbNode.metadata ? (JSON.parse(dbNode.metadata) as NodeMetadata) : undefined,
+  };
+}
+
+/**
+ * Find the path between two nodes in the graph using adjacency maps.
+ * Returns direction (upstream/downstream), hop count, and intermediate nodes.
+ * 
+ * @param nodeId - The source node ID
+ * @param anchorId - The target anchor node ID
+ * @param edges - Array of edges with from_node and to_node
+ * @param getNodeById - Function to get node data by ID
+ */
+export function findPath(
+  nodeId: string,
+  anchorId: string,
+  edges: Array<{ from_node: string; to_node: string }>,
+  getNodeById: (id: string) => DbNodeLike | undefined
+): PathInfo | null {
+  // Build adjacency maps
+  const downstreamMap = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!downstreamMap.has(edge.from_node)) {
+      downstreamMap.set(edge.from_node, []);
+    }
+    downstreamMap.get(edge.from_node)!.push(edge.to_node);
+  }
+
+  // BFS to find shortest path from nodeId to anchorId (node is upstream of anchor)
+  const upstreamPath = bfsPath(nodeId, anchorId, downstreamMap);
+  if (upstreamPath) {
+    // Remove source and target, keep intermediates
+    const intermediateIds = upstreamPath.slice(1, -1);
+    const intermediateNodes = intermediateIds
+      .map((id) => getNodeById(id))
+      .filter((n): n is DbNodeLike => n !== undefined)
+      .map(dbNodeToGraphNode);
+
+    return {
+      direction: "upstream",
+      hops: upstreamPath.length - 1,
+      intermediateNodes,
+    };
+  }
+
+  // BFS to find shortest path from anchorId to nodeId (node is downstream of anchor)
+  const downstreamPath = bfsPath(anchorId, nodeId, downstreamMap);
+  if (downstreamPath) {
+    // Remove source and target, keep intermediates
+    const intermediateIds = downstreamPath.slice(1, -1);
+    const intermediateNodes = intermediateIds
+      .map((id) => getNodeById(id))
+      .filter((n): n is DbNodeLike => n !== undefined)
+      .map(dbNodeToGraphNode);
+
+    return {
+      direction: "downstream",
+      hops: downstreamPath.length - 1,
+      intermediateNodes,
+    };
+  }
+
+  // No path found
+  return null;
+}
+
+/**
+ * BFS to find shortest path between two nodes
+ */
+function bfsPath(
+  startId: string,
+  endId: string,
+  adjacencyMap: Map<string, string[]>,
+  maxDepth = 10
+): string[] | null {
+  if (startId === endId) return [startId];
+
+  const queue: Array<{ nodeId: string; path: string[] }> = [{ nodeId: startId, path: [startId] }];
+  const visited = new Set<string>([startId]);
+
+  while (queue.length > 0) {
+    const { nodeId, path } = queue.shift()!;
+
+    if (path.length > maxDepth) continue;
+
+    const neighbors = adjacencyMap.get(nodeId) || [];
+    for (const neighbor of neighbors) {
+      if (neighbor === endId) {
+        return [...path, neighbor];
+      }
+
+      if (!visited.has(neighbor)) {
+        visited.add(neighbor);
+        queue.push({ nodeId: neighbor, path: [...path, neighbor] });
+      }
+    }
+  }
+
+  return null;
+}
 
 const RELATIONAL_EXPLAIN_PROMPT = `You are an expert data engineer explaining how two tables in a data pipeline relate to each other.
 
@@ -12,12 +141,6 @@ Given a source table/model and an anchor (target) table, along with the path bet
 
 Keep the explanation under 150 words. Use "straight answer" style - lead with the key relationship insight.
 Reference table names using backticks like \`table_name\` so they can be clickable in the UI.`;
-
-export interface PathInfo {
-  direction: "upstream" | "downstream";
-  hops: number;
-  intermediateNodes: GraphNode[];
-}
 
 export interface RelationalExplanationResult {
   fullExplanation: string;

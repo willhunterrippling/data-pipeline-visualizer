@@ -19,7 +19,7 @@ import { generateSystemPrompt, formatToolResult } from "./prompts";
 // Configuration
 // ============================================================================
 
-const MAX_TOOL_CALLS = 10; // Prevent runaway loops
+const MAX_TOOL_CALLS = 15; // Prevent runaway loops, but allow enough for complex lineage questions
 const API_TIMEOUT_MS = 55000;
 const DEFAULT_MODEL = "gpt-4.1"; // Use a model that supports function calling well
 
@@ -307,6 +307,8 @@ function getToolDescription(toolName: string, args: Record<string, unknown>): st
       return `Searching for column "${args.columnName}"...`;
     case "getGraphStats":
       return "Getting pipeline statistics...";
+    case "searchSqlContent":
+      return `Searching SQL code for "${args.pattern}"...`;
     default:
       return `Running ${toolName}...`;
   }
@@ -344,6 +346,8 @@ async function* generateReasoning(
         return `search for column "${tc.args.columnName}"`;
       case "getGraphStats":
         return `get pipeline statistics`;
+      case "searchSqlContent":
+        return `search SQL code for "${tc.args.pattern}"`;
       default:
         return tc.name;
     }
@@ -670,12 +674,58 @@ export async function* runAgentStream(
       yield* generateReflection(client, model, message, batchToolLogs);
     }
 
-    // Hit max tool calls - return what we have
-    yield {
-      type: "message",
-      content: "I've gathered a lot of information but reached my limit for tool calls. Based on what I've found so far, let me provide what I can.",
-      isPartial: false,
-    };
+    // Hit max tool calls - generate a final answer using all gathered context
+    
+    try {
+      // Force the model to generate a final response without more tool calls
+      const finalResponse = await client.chat.completions.create({
+        model,
+        messages: [
+          ...messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+          {
+            role: "user",
+            content: "You've gathered enough information. Please provide your final answer now based on everything you've found. Do not request more tool calls.",
+          },
+        ],
+        max_tokens: 4096,
+        stream: true,
+      });
+      
+      let fullMessage = "";
+      for await (const chunk of finalResponse) {
+        const delta = chunk.choices[0]?.delta?.content || "";
+        if (delta) {
+          fullMessage += delta;
+          yield {
+            type: "message",
+            content: fullMessage,
+            isPartial: true,
+          };
+        }
+      }
+      
+      // Yield final complete message
+      const { cleanContent, actions } = parseActions(fullMessage);
+      yield {
+        type: "message",
+        content: cleanContent,
+        isPartial: false,
+      };
+      
+      if (actions.length > 0) {
+        yield {
+          type: "actions",
+          actions,
+        };
+      }
+    } catch (finalError) {
+      // If final synthesis fails, fall back to generic message
+      yield {
+        type: "message",
+        content: "I've gathered a lot of information but reached my limit for tool calls. Unfortunately, I couldn't synthesize a final answer. Please try asking a more specific question.",
+        isPartial: false,
+      };
+    }
 
     yield {
       type: "done",

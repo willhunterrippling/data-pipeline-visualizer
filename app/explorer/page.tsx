@@ -8,6 +8,12 @@ import DepthControl from "@/components/DepthControl";
 import OrientationHeader from "@/components/OrientationHeader";
 import EditFlowModal from "@/components/EditFlowModal";
 import PipelineChat from "@/components/PipelineChat";
+import {
+  getCachedExplanation,
+  setCachedExplanation,
+  getCachedRelationalExplanation,
+  setCachedRelationalExplanation,
+} from "@/lib/client/explanationCache";
 import type { GraphNode, GraphEdge, GraphFlow, ProposedAction, ChatContext } from "@/lib/types";
 import type { GraphExplorerRef, VisibleNode } from "@/components/GraphExplorer";
 import type { VisibilityReason } from "@/lib/graph/visibility";
@@ -138,9 +144,11 @@ interface LineageData {
 interface SidePanelData {
   node: GraphNode;
   explanation?: string;
+  relationalExplanation?: string;
   upstream: GraphNode[];
   downstream: GraphNode[];
   isLoadingExplanation: boolean;
+  isLoadingRelationalExplanation?: boolean;
   visibilityReason?: string;
 }
 
@@ -293,20 +301,26 @@ function ExplorerContent() {
       graphRef.current?.focusNode(node.id);
     }, 200);
 
+    // Check localStorage cache first for explanation
+    const cachedExplanation = getCachedExplanation(node.id);
+
     // Fetch node details
     fetch(`/api/node/${encodeURIComponent(node.id)}`)
       .then((res) => res.json())
       .then((data) => {
+        // Use cached explanation if available, otherwise use server's
+        const explanation = cachedExplanation || data.explanation;
+        
         setSidePanel({
           node: data.node,
-          explanation: data.explanation,
+          explanation,
           upstream: data.upstream,
           downstream: data.downstream,
-          isLoadingExplanation: !data.explanation,
+          isLoadingExplanation: !explanation,
         });
 
-        // Generate explanation if not cached
-        if (!data.explanation) {
+        // Generate explanation if not cached anywhere
+        if (!explanation) {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
@@ -318,6 +332,10 @@ function ExplorerContent() {
           })
             .then((res) => res.json())
             .then((explainData) => {
+              // Cache the new explanation in localStorage
+              if (explainData.explanation) {
+                setCachedExplanation(node.id, explainData.explanation);
+              }
               setSidePanel((prev) =>
                 prev
                   ? { ...prev, explanation: explainData.explanation, isLoadingExplanation: false }
@@ -366,11 +384,21 @@ function ExplorerContent() {
       setFocusId(node.id);
     }
 
+    // Check localStorage cache first for explanation
+    const cachedExplanation = getCachedExplanation(node.id);
+    // Check for relational explanation cache if we have an anchor
+    const cachedRelationalExplanation = anchorId && node.id !== anchorId
+      ? getCachedRelationalExplanation(node.id, anchorId)
+      : null;
+
     setSidePanel({
       node,
       upstream: [],
       downstream: [],
-      isLoadingExplanation: true,
+      isLoadingExplanation: !cachedExplanation,
+      isLoadingRelationalExplanation: anchorId && node.id !== anchorId ? !cachedRelationalExplanation : false,
+      explanation: cachedExplanation || undefined,
+      relationalExplanation: cachedRelationalExplanation || undefined,
       visibilityReason,
     });
 
@@ -378,17 +406,20 @@ function ExplorerContent() {
     fetch(`/api/node/${encodeURIComponent(node.id)}`)
       .then((res) => res.json())
       .then((data) => {
+        // Use cached explanation if available, otherwise use server's
+        const explanation = cachedExplanation || data.explanation;
+        
         setSidePanel((prev) => ({
           ...prev!,
           node: data.node,
-          explanation: data.explanation,
+          explanation,
           upstream: data.upstream,
           downstream: data.downstream,
-          isLoadingExplanation: !data.explanation,
+          isLoadingExplanation: !explanation,
         }));
 
-        // Generate explanation if not cached
-        if (!data.explanation) {
+        // Generate explanation if not cached anywhere
+        if (!explanation) {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
 
@@ -400,6 +431,10 @@ function ExplorerContent() {
           })
             .then((res) => res.json())
             .then((explainData) => {
+              // Cache the new explanation in localStorage
+              if (explainData.explanation) {
+                setCachedExplanation(node.id, explainData.explanation);
+              }
               setSidePanel((prev) =>
                 prev
                   ? { ...prev, explanation: explainData.explanation, isLoadingExplanation: false }
@@ -425,6 +460,49 @@ function ExplorerContent() {
             : null
         );
       });
+
+    // Fetch relational explanation if this is not the anchor and we have an anchor
+    // Skip if we already have a cached version
+    if (node.id !== anchorId && anchorId && !cachedRelationalExplanation) {
+      const relController = new AbortController();
+      const relTimeoutId = setTimeout(() => relController.abort(), 60000);
+
+      fetch("/api/explain-relationship", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nodeId: node.id, anchorId }),
+        signal: relController.signal,
+      })
+        .then((res) => res.json())
+        .then((relData) => {
+          // Cache the relational explanation in localStorage
+          if (relData.explanation) {
+            setCachedRelationalExplanation(node.id, anchorId, relData.explanation);
+          }
+          setSidePanel((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  relationalExplanation: relData.explanation,
+                  isLoadingRelationalExplanation: false,
+                }
+              : null
+          );
+        })
+        .catch((err) => {
+          console.error("Failed to generate relational explanation:", err);
+          setSidePanel((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  relationalExplanation: "Failed to generate relationship explanation.",
+                  isLoadingRelationalExplanation: false,
+                }
+              : null
+          );
+        })
+        .finally(() => clearTimeout(relTimeoutId));
+    }
   }, [lineageData, anchorId]);
 
   // Clear anchor and focus
@@ -785,6 +863,34 @@ function ExplorerContent() {
                   <p className="text-sm text-white/40 italic">No explanation available.</p>
                 )}
               </div>
+
+              {/* Relationship to Anchor - only show for non-anchor nodes */}
+              {sidePanel.node.id !== anchorId && anchorId && (
+                <div>
+                  <h3 className="text-sm font-medium text-white/60 mb-2 flex items-center gap-2">
+                    <svg className="w-4 h-4 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                    </svg>
+                    Relationship to Anchor ({anchorNode?.name})
+                  </h3>
+                  {sidePanel.isLoadingRelationalExplanation ? (
+                    <div className="flex items-center gap-2 text-sm text-white/40">
+                      <div className="w-4 h-4 border-2 border-white/20 border-t-purple-400 rounded-full animate-spin" />
+                      Analyzing relationship...
+                    </div>
+                  ) : sidePanel.relationalExplanation ? (
+                    <div className="bg-purple-500/10 border border-purple-500/20 rounded-lg p-3">
+                      <MarkdownContent 
+                        content={sidePanel.relationalExplanation}
+                        nodes={allNodes}
+                        onNodeClick={handleSelectAnchor}
+                      />
+                    </div>
+                  ) : (
+                    <p className="text-sm text-white/40 italic">No relationship information available.</p>
+                  )}
+                </div>
+              )}
 
               {/* Upstream */}
               {sidePanel.upstream.length > 0 && (

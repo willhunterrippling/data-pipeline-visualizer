@@ -59,9 +59,31 @@ function initSchema(db: Database.Database) {
   if (!colNames.has('layout_layer')) missingCols.push({ name: 'layout_layer', type: 'INTEGER' });
   if (!colNames.has('semantic_layer')) missingCols.push({ name: 'semantic_layer', type: 'TEXT' });
   if (!colNames.has('importance_score')) missingCols.push({ name: 'importance_score', type: 'REAL' });
+  if (!colNames.has('sql_content')) missingCols.push({ name: 'sql_content', type: 'TEXT' });
   
   for (const col of missingCols) {
     db.exec(`ALTER TABLE nodes ADD COLUMN ${col.name} ${col.type}`);
+  }
+  
+  // Migration: Rebuild FTS index if sql_content column was added
+  // FTS5 virtual tables can't be altered, so we need to check and rebuild
+  if (!colNames.has('sql_content')) {
+    // Drop old triggers and FTS table, they'll be recreated by schema.sql
+    db.exec(`
+      DROP TRIGGER IF EXISTS nodes_ai;
+      DROP TRIGGER IF EXISTS nodes_ad;
+      DROP TRIGGER IF EXISTS nodes_au;
+      DROP TABLE IF EXISTS nodes_fts;
+    `);
+    // Re-run schema to create FTS with sql_content
+    const schemaPathForFts = join(process.cwd(), "lib/db/schema.sql");
+    const schemaForFts = readFileSync(schemaPathForFts, "utf-8");
+    db.exec(schemaForFts);
+    // Rebuild FTS index from existing nodes
+    db.exec(`
+      INSERT INTO nodes_fts(rowid, id, name, type, metadata, sql_content)
+      SELECT rowid, id, name, type, metadata, sql_content FROM nodes;
+    `);
   }
   
   // Migration: Create relational_explanations table if it doesn't exist
@@ -98,6 +120,7 @@ export interface DbNode {
   group_id: string | null;
   repo: string | null;
   metadata: string | null;
+  sql_content: string | null;
   layout_x: number | null;
   layout_y: number | null;
   layout_layer: number | null;
@@ -208,21 +231,21 @@ export interface DbJob {
 export function insertNode(node: Omit<DbNode, "created_at">) {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO nodes (id, name, type, subtype, group_id, repo, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO nodes (id, name, type, subtype, group_id, repo, metadata, sql_content)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(node.id, node.name, node.type, node.subtype, node.group_id, node.repo, node.metadata);
+  stmt.run(node.id, node.name, node.type, node.subtype, node.group_id, node.repo, node.metadata, node.sql_content);
 }
 
 export function insertNodes(nodes: Omit<DbNode, "created_at">[]) {
   const db = getDb();
   const stmt = db.prepare(`
-    INSERT OR REPLACE INTO nodes (id, name, type, subtype, group_id, repo, metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO nodes (id, name, type, subtype, group_id, repo, metadata, sql_content)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertMany = db.transaction((items: typeof nodes) => {
     for (const node of items) {
-      stmt.run(node.id, node.name, node.type, node.subtype, node.group_id, node.repo, node.metadata);
+      stmt.run(node.id, node.name, node.type, node.subtype, node.group_id, node.repo, node.metadata, node.sql_content);
     }
   });
   insertMany(nodes);

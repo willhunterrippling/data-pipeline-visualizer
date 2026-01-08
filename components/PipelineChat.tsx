@@ -93,19 +93,22 @@ function MarkdownContent({ content, allNodes, onNodeClick }: MarkdownContentProp
 
             if (matchingNode && onNodeClick) {
               parts.push(
-                <button
+                <span
                   key={key++}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => onNodeClick(matchingNode.id)}
-                  className="px-1.5 py-0.5 rounded bg-emerald-500/20 font-mono text-xs text-emerald-300 hover:bg-emerald-500/30 cursor-pointer transition-colors"
+                  onKeyDown={(e) => e.key === "Enter" && onNodeClick(matchingNode.id)}
+                  className="inline px-1.5 py-0.5 rounded bg-emerald-500/20 font-mono text-xs text-emerald-300 hover:bg-emerald-500/30 cursor-pointer transition-colors break-all"
                 >
                   {codeText}
-                </button>
+                </span>
               );
             } else {
               parts.push(
                 <code
                   key={key++}
-                  className="px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs text-cyan-300"
+                  className="inline px-1.5 py-0.5 rounded bg-white/10 font-mono text-xs text-cyan-300 break-all"
                 >
                   {codeText}
                 </code>
@@ -123,17 +126,48 @@ function MarkdownContent({ content, allNodes, onNodeClick }: MarkdownContentProp
         return parts.length > 0 ? parts : [text];
       };
 
+      // Check if paragraph contains bullet list items
       if (paragraph.match(/^[-*]\s/m)) {
-        const items = paragraph.split(/\n/).filter((line) => line.trim());
-        return (
-          <ul key={pIdx} className="list-disc list-inside space-y-1 mb-3">
-            {items.map((item, iIdx) => (
-              <li key={iIdx} className="text-white/80">
-                {processInline(item.replace(/^[-*]\s+/, ""))}
-              </li>
-            ))}
-          </ul>
-        );
+        const lines = paragraph.split(/\n/).filter((line) => line.trim());
+        
+        // Separate bullet items from non-bullet lines (intro text, headers, etc.)
+        const elements: React.ReactNode[] = [];
+        let currentBulletItems: string[] = [];
+        
+        const flushBulletList = () => {
+          if (currentBulletItems.length > 0) {
+            elements.push(
+              <ul key={`${pIdx}-ul-${elements.length}`} className="list-disc pl-5 space-y-1 mb-2">
+                {currentBulletItems.map((item, iIdx) => (
+                  <li key={iIdx} className="text-white/80 break-words">
+                    {processInline(item.replace(/^\s*[-*]\s+/, ""))}
+                  </li>
+                ))}
+              </ul>
+            );
+            currentBulletItems = [];
+          }
+        };
+        
+        for (const line of lines) {
+          const isBullet = /^\s*[-*]\s+/.test(line);
+          if (isBullet) {
+            currentBulletItems.push(line);
+          } else {
+            // Flush any pending bullet items before adding non-bullet text
+            flushBulletList();
+            // Render non-bullet line as paragraph
+            elements.push(
+              <p key={`${pIdx}-p-${elements.length}`} className="mb-2 text-white/80 leading-relaxed">
+                {processInline(line)}
+              </p>
+            );
+          }
+        }
+        // Flush any remaining bullet items
+        flushBulletList();
+        
+        return <div key={pIdx} className="mb-3">{elements}</div>;
       }
 
       const lines = paragraph.split(/\n/);
@@ -310,7 +344,7 @@ function CollapsibleSection({
       
       <div 
         className={`overflow-hidden transition-all duration-200 ${
-          isExpanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"
+          isExpanded ? "opacity-100" : "max-h-0 opacity-0"
         }`}
       >
         <div className="pl-5 pt-1">
@@ -396,39 +430,29 @@ function ThinkingTimeline({
           </div>
         ))}
         
-        {/* Current reasoning being streamed */}
+        {/* Current reasoning being streamed - cursor follows text */}
         {currentReasoning && (
           <p className="text-xs text-white/60 leading-relaxed py-0.5">
             {currentReasoning}
-            {isStreaming && <span className="animate-pulse">▊</span>}
+            {isStreaming && <span className="animate-pulse"> ▊</span>}
           </p>
         )}
         
         {/* Initial state - no timeline yet */}
         {timeline.length === 0 && !currentReasoning && isStreaming && (
           <p className="text-xs text-white/60 leading-relaxed py-0.5">
-            Analyzing your question...<span className="animate-pulse">▊</span>
+            Analyzing your question... <span className="animate-pulse">▊</span>
+          </p>
+        )}
+        
+        {/* Fallback cursor when no reasoning but still streaming (e.g. after tool calls) */}
+        {!currentReasoning && timeline.length > 0 && isStreaming && (
+          <p className="text-xs text-white/60 leading-relaxed py-0.5">
+            <span className="animate-pulse">▊</span>
           </p>
         )}
       </div>
     </CollapsibleSection>
-  );
-}
-
-// ============================================================================
-// Streaming Indicator
-// ============================================================================
-
-interface StreamingIndicatorProps {
-  message: string;
-}
-
-function StreamingIndicator({ message }: StreamingIndicatorProps) {
-  return (
-    <div className="flex items-center gap-2 text-white/50 py-2">
-      <div className="w-3 h-3 border-2 border-white/20 border-t-cyan-400 rounded-full animate-spin" />
-      <span className="text-xs">{message}</span>
-    </div>
   );
 }
 
@@ -530,7 +554,6 @@ interface StreamingMessageProps {
 
 function StreamingMessage({ streamingState, allNodes, onNodeClick }: StreamingMessageProps) {
   const { 
-    thinkingMessage, 
     currentReasoning,
     currentReasoningComplete,
     timeline, 
@@ -539,7 +562,6 @@ function StreamingMessage({ streamingState, allNodes, onNodeClick }: StreamingMe
 
   const hasTimeline = timeline.length > 0 || currentReasoning;
   const showTimeline = hasTimeline || (!currentReasoningComplete);
-  const showIndicator = !messageContent && !hasTimeline && timeline.length === 0;
 
   return (
     <div className="flex justify-start">
@@ -551,11 +573,6 @@ function StreamingMessage({ streamingState, allNodes, onNodeClick }: StreamingMe
             currentReasoning={currentReasoning}
             isStreaming={!messageContent}
           />
-        )}
-
-        {/* Loading indicator when nothing else to show */}
-        {showIndicator && (
-          <StreamingIndicator message={thinkingMessage || "Thinking..."} />
         )}
 
         {/* Message content */}
@@ -595,10 +612,41 @@ export default function PipelineChat({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const doneProcessedRef = useRef<boolean>(false);
+  // Ref to store latest streaming data (refs are always current, unlike state in closures)
+  // IMPORTANT: currentReasoningComplete must be in the ref to avoid race conditions
+  // when events arrive faster than React can batch state updates
+  const streamingDataRef = useRef<{
+    messageContent: string;
+    actions: ProposedAction[];
+    timeline: TimelineItem[];
+    currentReasoning: string;
+    currentReasoningComplete: boolean;
+  }>({ messageContent: "", actions: [], timeline: [], currentReasoning: "", currentReasoningComplete: false });
+  
+  // Track scroll behavior during thinking vs answer phases
+  const answerStartedRef = useRef<boolean>(false);
+  const streamingMessageRef = useRef<HTMLDivElement>(null);
 
+  // Scroll logic: during thinking, scroll to bottom. When answer first appears, scroll to top of answer.
+  // After answer starts, stop auto-scrolling to let user read naturally.
+  useEffect(() => {
+    const hasAnswer = streamingState.messageContent.length > 0;
+    
+    if (hasAnswer && !answerStartedRef.current) {
+      // Answer just started - scroll to top of the streaming message
+      answerStartedRef.current = true;
+      streamingMessageRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else if (!hasAnswer && streamingState.isStreaming) {
+      // Still in thinking phase - auto-scroll to bottom
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [streamingState.messageContent, streamingState.isStreaming, streamingState.timeline, streamingState.currentReasoning]);
+
+  // Scroll to bottom when new messages are added (user or completed assistant messages)
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingState.timeline, streamingState.messageContent, streamingState.currentReasoning]);
+  }, [messages]);
 
   useEffect(() => {
     if (isOpen) {
@@ -630,12 +678,26 @@ export default function PipelineChat({
         break;
 
       case "reasoning":
+        // Update ref SYNCHRONOUSLY before React state update (fixes race condition)
+        const isComplete = !event.isPartial;
+        
+        // Check ref for completed reasoning (not state, which may be stale)
+        if (event.isPartial && streamingDataRef.current.currentReasoning && streamingDataRef.current.currentReasoningComplete) {
+          // Save completed reasoning to timeline before starting new one
+          streamingDataRef.current.timeline = [...streamingDataRef.current.timeline, { type: "reasoning" as const, content: streamingDataRef.current.currentReasoning }];
+        }
+        
+        // Update ref with new reasoning state
+        streamingDataRef.current.currentReasoning = event.content;
+        streamingDataRef.current.currentReasoningComplete = isComplete;
+        
         setStreamingState((prev) => {
           // If we're starting a new reasoning phase and have a completed one, save to timeline
+          // Use ref's timeline which was already updated above
           if (event.isPartial && prev.currentReasoning && prev.currentReasoningComplete) {
             return {
               ...prev,
-              timeline: [...prev.timeline, { type: "reasoning", content: prev.currentReasoning }],
+              timeline: streamingDataRef.current.timeline,
               currentReasoning: event.content,
               currentReasoningComplete: false,
             };
@@ -644,7 +706,7 @@ export default function PipelineChat({
           return {
             ...prev,
             currentReasoning: event.content,
-            currentReasoningComplete: !event.isPartial,
+            currentReasoningComplete: isComplete,
           };
         });
         break;
@@ -665,6 +727,17 @@ export default function PipelineChat({
         break;
 
       case "tool_result":
+        // Read from ref SYNCHRONOUSLY to check if reasoning is complete (fixes race condition)
+        const refReasoning = streamingDataRef.current.currentReasoning;
+        const refReasoningComplete = streamingDataRef.current.currentReasoningComplete;
+        
+        // First, finalize any current reasoning before adding tool (using ref values)
+        if (refReasoning && refReasoningComplete) {
+          streamingDataRef.current.timeline = [...streamingDataRef.current.timeline, { type: "reasoning" as const, content: refReasoning }];
+          streamingDataRef.current.currentReasoning = "";
+          streamingDataRef.current.currentReasoningComplete = false;
+        }
+        
         setStreamingState((prev) => {
           const newPending = new Map(prev.pendingToolCalls);
           newPending.delete(event.toolCallId);
@@ -676,27 +749,26 @@ export default function PipelineChat({
             durationMs: event.durationMs,
           };
           
-          // First, finalize any current reasoning before adding tool
-          let newTimeline = prev.timeline;
-          if (prev.currentReasoning && prev.currentReasoningComplete) {
-            newTimeline = [...newTimeline, { type: "reasoning" as const, content: prev.currentReasoning }];
-          }
+          // Add tool call to timeline (ref was already updated with reasoning above)
+          const timelineWithTool = [...streamingDataRef.current.timeline, { type: "tool" as const, toolCall: newToolCall }];
           
-          // Add tool call to timeline
-          newTimeline = [...newTimeline, { type: "tool" as const, toolCall: newToolCall }];
+          // Update ref with final timeline
+          streamingDataRef.current.timeline = timelineWithTool;
           
           return {
             ...prev,
             pendingToolCalls: newPending,
-            timeline: newTimeline,
-            // Clear reasoning once added to timeline
-            currentReasoning: prev.currentReasoningComplete ? "" : prev.currentReasoning,
+            timeline: timelineWithTool,
+            // Clear reasoning if it was completed and saved
+            currentReasoning: refReasoningComplete ? "" : prev.currentReasoning,
             currentReasoningComplete: false,
           };
         });
         break;
 
       case "message":
+        // Update ref with message content
+        streamingDataRef.current.messageContent = event.content;
         setStreamingState((prev) => ({
           ...prev,
           messageContent: event.content,
@@ -705,6 +777,8 @@ export default function PipelineChat({
         break;
 
       case "actions":
+        // Update ref with actions
+        streamingDataRef.current.actions = event.actions;
         setStreamingState((prev) => ({
           ...prev,
           actions: event.actions,
@@ -720,44 +794,57 @@ export default function PipelineChat({
         break;
 
       case "done":
-        setStreamingState((prev) => {
-          const { messageContent, actions, timeline, currentReasoning } = prev;
-          
-          // Build final timeline - add any remaining reasoning
-          let finalTimeline = [...timeline];
-          if (currentReasoning) {
-            finalTimeline.push({ type: "reasoning" as const, content: currentReasoning });
-          }
-          
-          queueMicrotask(() => {
-            const finalMessage: ExtendedChatMessage = {
-              id: uuid(),
-              role: "assistant",
-              content: messageContent,
-              timestamp: new Date().toISOString(),
-              actions: actions.length > 0 ? actions : undefined,
-              timeline: finalTimeline.length > 0 ? finalTimeline : undefined,
-            };
-            setMessages((msgs) => [...msgs, finalMessage]);
-          });
-          
-          return {
-            isStreaming: false,
-            thinkingMessage: "",
-            currentReasoning: "",
-            currentReasoningComplete: false,
-            timeline: [],
-            pendingToolCalls: new Map(),
-            messageContent: "",
-            actions: [],
-          };
+        // Guard against duplicate processing (React may call state updaters multiple times)
+        if (doneProcessedRef.current) {
+          break;
+        }
+        doneProcessedRef.current = true;
+        
+        // Read from ref (always has latest values, unlike stale state in closures)
+        const { messageContent, actions, timeline, currentReasoning } = streamingDataRef.current;
+        
+        // Build final timeline - add any remaining reasoning
+        let finalTimeline = [...timeline];
+        if (currentReasoning) {
+          finalTimeline.push({ type: "reasoning" as const, content: currentReasoning });
+        }
+        
+        // Create the final message synchronously
+        const finalMessage: ExtendedChatMessage = {
+          id: uuid(),
+          role: "assistant",
+          content: messageContent,
+          timestamp: new Date().toISOString(),
+          actions: actions.length > 0 ? actions : undefined,
+          timeline: finalTimeline.length > 0 ? finalTimeline : undefined,
+        };
+        
+        // Add message and stop streaming in one atomic update to avoid gaps
+        setMessages((msgs) => [...msgs, finalMessage]);
+        setStreamingState({
+          isStreaming: false,
+          thinkingMessage: "",
+          currentReasoning: "",
+          currentReasoningComplete: false,
+          timeline: [],
+          pendingToolCalls: new Map(),
+          messageContent: "",
+          actions: [],
         });
+        
+        // Reset ref for next message
+        streamingDataRef.current = { messageContent: "", actions: [], timeline: [], currentReasoning: "", currentReasoningComplete: false };
         break;
     }
   }, []);
 
   const sendMessage = useCallback(async () => {
     if (!inputValue.trim() || streamingState.isStreaming) return;
+    
+    // Reset flags and ref for new message
+    streamingDataRef.current = { messageContent: "", actions: [], timeline: [], currentReasoning: "", currentReasoningComplete: false };
+    doneProcessedRef.current = false;
+    answerStartedRef.current = false;
 
     const userMessage: ExtendedChatMessage = {
       id: uuid(),
@@ -873,6 +960,7 @@ export default function PipelineChat({
     }
     setMessages([]);
     setError(null);
+    answerStartedRef.current = false;
     setStreamingState({
       isStreaming: false,
       thinkingMessage: "",
@@ -914,7 +1002,12 @@ export default function PipelineChat({
                 </svg>
               </div>
               <div>
-                <h3 className="font-medium text-white">Pipeline Assistant</h3>
+                <h3 className="font-medium text-white flex items-center gap-2">
+                  Pipeline Assistant
+                  {streamingState.isStreaming && (
+                    <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                  )}
+                </h3>
                 <p className="text-xs text-white/50">Ask questions about your data pipeline</p>
               </div>
             </div>
@@ -983,11 +1076,13 @@ export default function PipelineChat({
             ))}
 
             {streamingState.isStreaming && (
-              <StreamingMessage
-                streamingState={streamingState}
-                allNodes={allNodes}
-                onNodeClick={handleNodeClick}
-              />
+              <div ref={streamingMessageRef}>
+                <StreamingMessage
+                  streamingState={streamingState}
+                  allNodes={allNodes}
+                  onNodeClick={handleNodeClick}
+                />
+              </div>
             )}
 
             {error && (

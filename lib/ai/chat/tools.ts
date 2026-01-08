@@ -14,7 +14,6 @@ import {
   type DbNode,
   type DbFlow,
 } from "@/lib/db";
-import { getModelSql } from "@/lib/indexer/dbtParser";
 import type { GraphNode, GraphFlow, ColumnInfo } from "@/lib/types";
 
 // ============================================================================
@@ -68,6 +67,14 @@ export interface ColumnSearchResult {
   columnName: string;
   columnType: string;
   columnDescription?: string;
+}
+
+export interface SqlSearchResult {
+  nodeId: string;
+  nodeName: string;
+  nodeType: string;
+  semanticLayer?: string;
+  matchSnippet: string; // Snippet of SQL around the match
 }
 
 // ============================================================================
@@ -181,22 +188,10 @@ export function getNodeDetails(nodeId: string): NodeDetails | null {
   const metadata = dbNode.metadata ? JSON.parse(dbNode.metadata) : {};
   const explanation = getExplanation(nodeId);
 
-  // Get SQL content if available
+  // Get SQL content from database (stored during ingestion)
   let sql: string | undefined;
-  if (metadata.filePath) {
-    // Try common repo paths
-    const repoPaths = [
-      process.env.DBT_REPO_PATH || "",
-      process.cwd(),
-    ].filter(Boolean);
-
-    for (const repoPath of repoPaths) {
-      const content = getModelSql(repoPath, metadata.filePath);
-      if (content) {
-        sql = content;
-        break;
-      }
-    }
+  if (dbNode.sql_content) {
+    sql = dbNode.sql_content;
   }
 
   // Get upstream/downstream counts
@@ -366,6 +361,113 @@ export function searchByColumn(
   }
 
   return columnResults;
+}
+
+/**
+ * Search within SQL content to find models that implement specific logic.
+ * Uses FTS on sql_content column for efficient pattern matching.
+ */
+export function searchSqlContent(
+  pattern: string,
+  options?: {
+    limit?: number;
+  }
+): SqlSearchResult[] {
+  const db = getDb();
+  const limit = options?.limit ?? 10;
+
+  // Clean pattern for FTS - escape special characters and add wildcards
+  const cleanPattern = pattern
+    .replace(/[^\w\s]/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((term) => `${term}*`)
+    .join(" ");
+
+  if (!cleanPattern) {
+    return [];
+  }
+
+  const results: SqlSearchResult[] = [];
+
+  try {
+    // Use FTS to search in sql_content
+    const rows = db.prepare(`
+      SELECT DISTINCT nodes.* FROM nodes_fts
+      JOIN nodes ON nodes_fts.id = nodes.id
+      WHERE nodes_fts.sql_content MATCH ?
+      AND nodes.sql_content IS NOT NULL
+      LIMIT ?
+    `).all(cleanPattern, limit * 2) as DbNode[]; // Get extra to account for potential filtering
+
+    for (const row of rows) {
+      if (!row.sql_content) continue;
+      
+      // Extract a snippet around the match
+      const sql = row.sql_content;
+      const patternLower = pattern.toLowerCase();
+      const sqlLower = sql.toLowerCase();
+      const matchIndex = sqlLower.indexOf(patternLower);
+      
+      let snippet: string;
+      if (matchIndex >= 0) {
+        // Show context around the match
+        const start = Math.max(0, matchIndex - 50);
+        const end = Math.min(sql.length, matchIndex + pattern.length + 100);
+        snippet = (start > 0 ? "..." : "") + sql.substring(start, end).trim() + (end < sql.length ? "..." : "");
+      } else {
+        // If exact match not found (due to FTS tokenization), show start of SQL
+        snippet = sql.substring(0, 150).trim() + (sql.length > 150 ? "..." : "");
+      }
+
+      results.push({
+        nodeId: row.id,
+        nodeName: row.name,
+        nodeType: row.type,
+        semanticLayer: row.semantic_layer || undefined,
+        matchSnippet: snippet,
+      });
+
+      if (results.length >= limit) break;
+    }
+  } catch {
+    // FTS query failed, fall back to LIKE search
+    const likePattern = `%${pattern}%`;
+    const rows = db.prepare(`
+      SELECT * FROM nodes 
+      WHERE sql_content LIKE ? 
+      LIMIT ?
+    `).all(likePattern, limit) as DbNode[];
+
+    for (const row of rows) {
+      if (!row.sql_content) continue;
+      
+      const sql = row.sql_content;
+      const patternLower = pattern.toLowerCase();
+      const sqlLower = sql.toLowerCase();
+      const matchIndex = sqlLower.indexOf(patternLower);
+      
+      let snippet: string;
+      if (matchIndex >= 0) {
+        const start = Math.max(0, matchIndex - 50);
+        const end = Math.min(sql.length, matchIndex + pattern.length + 100);
+        snippet = (start > 0 ? "..." : "") + sql.substring(start, end).trim() + (end < sql.length ? "..." : "");
+      } else {
+        snippet = sql.substring(0, 150).trim() + (sql.length > 150 ? "..." : "");
+      }
+
+      results.push({
+        nodeId: row.id,
+        nodeName: row.name,
+        nodeType: row.type,
+        semanticLayer: row.semantic_layer || undefined,
+        matchSnippet: snippet,
+      });
+    }
+  }
+
+  return results;
 }
 
 /**
@@ -576,6 +678,28 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    type: "function" as const,
+    function: {
+      name: "searchSqlContent",
+      description:
+        "Search within SQL transformation code to find models that implement specific logic, use certain functions, or reference particular patterns. Use this when you need to find models by their implementation details rather than name.",
+      parameters: {
+        type: "object",
+        properties: {
+          pattern: {
+            type: "string",
+            description: "Search pattern - can be column names, SQL keywords (CASE WHEN, GROUP BY), function names, or partial code snippets",
+          },
+          limit: {
+            type: "number",
+            description: "Maximum results to return (default 10)",
+          },
+        },
+        required: ["pattern"],
+      },
+    },
+  },
 ];
 
 /**
@@ -623,6 +747,11 @@ export function executeTool(
 
     case "getGraphStats":
       return getGraphStats();
+
+    case "searchSqlContent":
+      return searchSqlContent(args.pattern as string, {
+        limit: args.limit as number | undefined,
+      });
 
     default:
       throw new Error(`Unknown tool: ${toolName}`);

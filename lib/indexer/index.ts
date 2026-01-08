@@ -64,6 +64,7 @@ function graphNodeToDb(node: GraphNode): Omit<DbNode, "created_at"> {
     group_id: node.groupId || null,
     repo: node.repo || null,
     metadata: node.metadata ? JSON.stringify(node.metadata) : null,
+    sql_content: node.sqlContent || null,
     layout_x: node.layoutX ?? null,
     layout_y: node.layoutY ?? null,
     layout_layer: node.layoutLayer ?? null,

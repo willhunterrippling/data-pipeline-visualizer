@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     group_id TEXT,                 -- FK to groups
     repo TEXT,                     -- rippling-dbt, airflow-dags, snowflake
     metadata TEXT,                 -- JSON: columns, tags, materialization, schedule
+    sql_content TEXT,              -- Raw SQL file content (for dbt models)
     layout_x REAL,                 -- Pre-computed X position from dagre
     layout_y REAL,                 -- Pre-computed Y position from dagre
     layout_layer INTEGER,          -- Topological layer (depth from sources)
@@ -136,31 +137,32 @@ CREATE INDEX IF NOT EXISTS idx_citations_edge ON citations(edge_id);
 CREATE INDEX IF NOT EXISTS idx_lineage_cache_anchor ON lineage_cache(anchor_id);
 CREATE INDEX IF NOT EXISTS idx_lineage_cache_access ON lineage_cache(access_count DESC);
 
--- Full-text search for nodes
+-- Full-text search for nodes (includes sql_content for code search)
 CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
     id,
     name,
     type,
     metadata,
+    sql_content,
     content='nodes',
     content_rowid='rowid'
 );
 
 -- Triggers to keep FTS in sync
 CREATE TRIGGER IF NOT EXISTS nodes_ai AFTER INSERT ON nodes BEGIN
-    INSERT INTO nodes_fts(rowid, id, name, type, metadata) 
-    VALUES (new.rowid, new.id, new.name, new.type, new.metadata);
+    INSERT INTO nodes_fts(rowid, id, name, type, metadata, sql_content) 
+    VALUES (new.rowid, new.id, new.name, new.type, new.metadata, new.sql_content);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_ad AFTER DELETE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, type, metadata) 
-    VALUES ('delete', old.rowid, old.id, old.name, old.type, old.metadata);
+    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, type, metadata, sql_content) 
+    VALUES ('delete', old.rowid, old.id, old.name, old.type, old.metadata, old.sql_content);
 END;
 
 CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
-    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, type, metadata) 
-    VALUES ('delete', old.rowid, old.id, old.name, old.type, old.metadata);
-    INSERT INTO nodes_fts(rowid, id, name, type, metadata) 
-    VALUES (new.rowid, new.id, new.name, new.type, new.metadata);
+    INSERT INTO nodes_fts(nodes_fts, rowid, id, name, type, metadata, sql_content) 
+    VALUES ('delete', old.rowid, old.id, old.name, old.type, old.metadata, old.sql_content);
+    INSERT INTO nodes_fts(rowid, id, name, type, metadata, sql_content) 
+    VALUES (new.rowid, new.id, new.name, new.type, new.metadata, new.sql_content);
 END;
 

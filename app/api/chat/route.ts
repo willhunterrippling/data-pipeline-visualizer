@@ -83,15 +83,39 @@ export async function POST(request: NextRequest) {
       
       const stream = new ReadableStream({
         async start(controller) {
+          let isClosed = false;
+          
+          const safeEnqueue = (data: Uint8Array) => {
+            if (!isClosed) {
+              try {
+                controller.enqueue(data);
+              } catch {
+                isClosed = true;
+              }
+            }
+          };
+          
+          const safeClose = () => {
+            if (!isClosed) {
+              try {
+                controller.close();
+                isClosed = true;
+              } catch {
+                isClosed = true;
+              }
+            }
+          };
+          
           try {
             const agentStream = runAgentStream(message, safeHistory, safeContext);
             
             for await (const event of agentStream) {
               const sseData = encodeSSE(event);
-              controller.enqueue(encoder.encode(sseData));
+              safeEnqueue(encoder.encode(sseData));
+              if (isClosed) break; // Stop iterating if stream was closed
             }
             
-            controller.close();
+            safeClose();
           } catch (error) {
             console.error("Streaming error:", error);
             
@@ -100,8 +124,8 @@ export async function POST(request: NextRequest) {
               type: "error",
               error: error instanceof Error ? error.message : "An unknown error occurred",
             };
-            controller.enqueue(encoder.encode(encodeSSE(errorEvent)));
-            controller.close();
+            safeEnqueue(encoder.encode(encodeSSE(errorEvent)));
+            safeClose();
           }
         },
       });

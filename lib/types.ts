@@ -32,6 +32,8 @@ export interface GraphNode {
   groupId?: string;
   repo?: string;
   metadata?: NodeMetadata;
+  // Raw SQL content (for dbt models, stored in DB for Vercel deployment)
+  sqlContent?: string;
   // Pre-computed layout positions (from dagre)
   layoutX?: number;
   layoutY?: number;

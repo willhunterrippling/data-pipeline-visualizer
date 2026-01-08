@@ -168,12 +168,19 @@ export function parseDbtManifest(manifestPath: string, repoPath: string): DbtPar
     const fqn = buildFQN(dbtNode.database, dbtNode.schema, tableName);
     idToFqn.set(nodeId, fqn);
 
+    // Read SQL content for models (not seeds which are CSVs)
+    let sqlContent: string | undefined;
+    if (dbtNode.original_file_path && dbtNode.original_file_path.endsWith(".sql")) {
+      sqlContent = getModelSql(repoPath, dbtNode.original_file_path) || undefined;
+    }
+
     const node: GraphNode = {
       id: fqn,
       name: tableName,
       type: mapResourceTypeToNodeType(dbtNode.resource_type),
       subtype: mapResourceTypeToSubtype(dbtNode.resource_type),
       repo: "rippling-dbt",
+      sqlContent,
       metadata: {
         schema: dbtNode.schema,
         database: dbtNode.database,
@@ -827,6 +834,7 @@ export function parseDbtProjectFallback(projectPath: string): DbtParseResult {
       type: mapResourceTypeToNodeType(resourceType),
       subtype: mapResourceTypeToSubtype(resourceType),
       repo: "rippling-dbt",
+      sqlContent: sql, // Include SQL content for agent access
       metadata: {
         schema: inferredSchema,
         database: targetDatabase,

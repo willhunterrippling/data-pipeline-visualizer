@@ -6,9 +6,12 @@
     "dev": "next dev",
     "build": "npm run export-graph && next build",
     "build:local": "next build",
+    "build:with-explanations": "npm run export-graph:with-explanations && next build",
     "start": "next start",
     "lint": "eslint",
-    "export-graph": "npx tsx scripts/export-graph.ts"
+    "export-graph": "npx tsx scripts/export-graph.ts",
+    "export-graph:with-explanations": "npx tsx scripts/export-graph.ts --with-explanations",
+    "export-graph:dry-run": "npx tsx scripts/export-graph.ts --with-explanations --dry-run"
   },
   "dependencies": {
     "@types/dagre": "^0.7.53",

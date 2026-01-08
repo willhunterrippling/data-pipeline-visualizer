@@ -210,12 +210,7 @@ export async function inferGroups(
     
     // Process all chunks in parallel
     const chunkResults = await Promise.all(
-      chunks.map((chunk, i) => {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'grouping.ts:chunk',message:`Processing chunk ${i+1}/${chunks.length}`,data:{chunkIndex:i,chunkSize:chunk.length,totalChunks:chunks.length},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix'})}).catch(()=>{});
-        // #endregion
-        return getGroupsForChunk(chunk, topPrefixes, topTags, nodes.length);
-      })
+      chunks.map((chunk) => getGroupsForChunk(chunk, topPrefixes, topTags, nodes.length))
     );
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -224,10 +219,6 @@ export async function inferGroups(
 
     // Merge groups from all chunks
     const mergedGroups = mergeChunkGroups(chunkResults);
-    
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'grouping.ts:merge',message:'Groups merged',data:{chunksProcessed:chunks.length,groupsBeforeMerge:totalGroupsBeforeMerge,groupsAfterMerge:mergedGroups.length},timestamp:Date.now(),sessionId:'debug-session',runId:'post-fix'})}).catch(()=>{});
-    // #endregion
 
     onProgress?.(60, `Merged into ${mergedGroups.length} unique groups`);
 

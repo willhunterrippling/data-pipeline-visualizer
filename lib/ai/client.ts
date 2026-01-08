@@ -89,9 +89,6 @@ export async function complete(
 ): Promise<string> {
   const client = getClient();
   const model = options?.model || process.env.OPENAI_MODEL || DEFAULT_MODEL;
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'client.ts:88',message:'complete() called',data:{model,hasApiKey:!!process.env.OPENAI_API_KEY,envModel:process.env.OPENAI_MODEL},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'B,C'})}).catch(()=>{});
-  // #endregion
 
   // o1 models don't support system messages, so we prepend to user message
   const isO1 = model.startsWith("o1") || model.startsWith("o3");
@@ -124,10 +121,6 @@ export async function complete(
       })),
       max_completion_tokens: options?.maxTokens || 4096,
     });
-
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'client.ts:120',message:'API response received',data:{hasChoices:!!response.choices,choicesLength:response.choices?.length,hasMessage:!!response.choices?.[0]?.message,contentLength:response.choices?.[0]?.message?.content?.length,contentPreview:response.choices?.[0]?.message?.content?.substring(0,200),finishReason:response.choices?.[0]?.finish_reason},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,D'})}).catch(()=>{});
-    // #endregion
 
     // Track token usage
     if (response.usage) {
@@ -163,9 +156,6 @@ export async function completeJson<T>(
   // Extract JSON from response (may be wrapped in markdown code blocks)
   const jsonMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, response];
   const jsonStr = jsonMatch[1]?.trim() || response.trim();
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'client.ts:147',message:'completeJson parsing',data:{responseLength:response.length,responsePreview:response.substring(0,300),jsonMatchFound:!!jsonMatch[1],jsonStrLength:jsonStr.length,jsonStrPreview:jsonStr.substring(0,200)},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,E'})}).catch(()=>{});
-  // #endregion
   
   try {
     return JSON.parse(jsonStr) as T;

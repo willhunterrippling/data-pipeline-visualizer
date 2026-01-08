@@ -628,24 +628,23 @@ export default function PipelineChat({
   const answerStartedRef = useRef<boolean>(false);
   const streamingMessageRef = useRef<HTMLDivElement>(null);
 
-  // Scroll logic: during thinking, scroll to bottom. When answer first appears, scroll to top of answer.
-  // After answer starts, stop auto-scrolling to let user read naturally.
+  // During thinking phase, scroll to bottom to follow the thinking progress.
+  // Scroll-to-top-of-answer is now handled synchronously in the message event handler.
   useEffect(() => {
-    const hasAnswer = streamingState.messageContent.length > 0;
-    
-    if (hasAnswer && !answerStartedRef.current) {
-      // Answer just started - scroll to top of the streaming message
-      answerStartedRef.current = true;
-      streamingMessageRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    } else if (!hasAnswer && streamingState.isStreaming) {
-      // Still in thinking phase - auto-scroll to bottom
+    // Only auto-scroll during thinking phase (before answer starts)
+    if (streamingState.isStreaming && !answerStartedRef.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [streamingState.messageContent, streamingState.isStreaming, streamingState.timeline, streamingState.currentReasoning]);
+  }, [streamingState.isStreaming, streamingState.timeline, streamingState.currentReasoning]);
 
-  // Scroll to bottom when new messages are added (user or completed assistant messages)
+  // Scroll to bottom when new messages are added (user messages only, not completed streaming)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const lastMsg = messages[messages.length - 1];
+    // Only auto-scroll for user messages OR if we didn't just finish streaming an answer
+    // If answerStartedRef is true, the user was reading a streamed answer - don't disrupt them
+    if (lastMsg?.role === 'user' || !answerStartedRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
 
   useEffect(() => {
@@ -767,6 +766,14 @@ export default function PipelineChat({
         break;
 
       case "message":
+        // CRITICAL: Set answerStartedRef SYNCHRONOUSLY before React state updates
+        // This prevents the [messages] effect from scrolling to bottom
+        if (!answerStartedRef.current) {
+          answerStartedRef.current = true;
+          // Scroll to top of streaming message immediately
+          streamingMessageRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        
         // Update ref with message content
         streamingDataRef.current.messageContent = event.content;
         setStreamingState((prev) => ({

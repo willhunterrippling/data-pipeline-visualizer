@@ -265,10 +265,6 @@ function ExplorerContent() {
           params.set("focusId", focusId);
         }
 
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'explorer/page.tsx:fetchLineage',message:'Fetching lineage',data:{anchorId:anchorId?.slice(-40),focusId:focusId?.slice(-40),upstreamDepth,downstreamDepth,hasFocus:!!focusId},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H4,H5'})}).catch(()=>{});
-        // #endregion
-
         const res = await fetch(`/api/lineage/${encodeURIComponent(anchorId!)}?${params}`);
         if (!res.ok) throw new Error("Failed to load lineage");
         
@@ -377,9 +373,6 @@ function ExplorerContent() {
 
     // If clicking on a node in the lineage (not the anchor), stretch the view
     if (node.id !== anchorId && lineageData?.nodes.some(n => n.id === node.id)) {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/8b88715b-ceb9-4841-8612-e3ab766e87ab',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'explorer/page.tsx:handleNodeClick',message:'Setting focus for stretching',data:{clickedNodeId:node.id.slice(-40),anchorId:anchorId?.slice(-40),nodeLayer:nodeLayer},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'H5'})}).catch(()=>{});
-      // #endregion
       // Set this node as the focus to stretch the exploration
       setFocusId(node.id);
     }

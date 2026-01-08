@@ -4,16 +4,25 @@
  */
 
 import {
-  getDb,
   getNodeById,
   getUpstreamNodes,
   getDownstreamNodes,
   getFlows,
   getExplanation,
   getCitationsForNode,
+  getNodes,
+  getEdges,
+  isStaticMode,
   type DbNode,
   type DbFlow,
 } from "@/lib/db";
+
+// Only import getDb when not in static mode (for advanced queries)
+let getDb: (() => ReturnType<typeof import("@/lib/db").getDb>) | null = null;
+if (!isStaticMode()) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  getDb = require("@/lib/db").getDb;
+}
 import type { GraphNode, GraphFlow, ColumnInfo } from "@/lib/types";
 
 // ============================================================================
@@ -114,7 +123,8 @@ function dbFlowToSummary(dbFlow: DbFlow): FlowSummary {
 
 /**
  * Search for nodes by name, description, or metadata.
- * Uses FTS (full-text search) for efficient querying.
+ * Uses FTS (full-text search) for efficient querying when available,
+ * falls back to in-memory search in static mode.
  */
 export function searchNodes(
   query: string,
@@ -123,8 +133,46 @@ export function searchNodes(
     limit?: number;
   }
 ): NodeSummary[] {
-  const db = getDb();
   const limit = options?.limit ?? 20;
+
+  // In static mode, use in-memory search
+  if (isStaticMode() || !getDb) {
+    const lowerQuery = query.toLowerCase();
+    const allNodes = getNodes();
+    const results: DbNode[] = [];
+    
+    for (const node of allNodes) {
+      if (results.length >= limit) break;
+      
+      // Filter by type if specified
+      if (options?.type && node.type !== options.type) continue;
+      
+      // Search in name, id, and metadata
+      const nameMatch = node.name.toLowerCase().includes(lowerQuery);
+      const idMatch = node.id.toLowerCase().includes(lowerQuery);
+      let metadataMatch = false;
+      
+      if (node.metadata) {
+        try {
+          const metadata = JSON.parse(node.metadata);
+          metadataMatch = metadata.description?.toLowerCase().includes(lowerQuery) ||
+                         metadata.schema?.toLowerCase().includes(lowerQuery) ||
+                         metadata.database?.toLowerCase().includes(lowerQuery);
+        } catch {
+          // Ignore JSON parse errors
+        }
+      }
+      
+      if (nameMatch || idMatch || metadataMatch) {
+        results.push(node);
+      }
+    }
+    
+    return results.map(dbNodeToSummary);
+  }
+
+  // SQLite mode - use FTS
+  const db = getDb();
 
   // Clean query for FTS - escape special characters and add wildcards
   const cleanQuery = query
@@ -195,13 +243,26 @@ export function getNodeDetails(nodeId: string): NodeDetails | null {
   }
 
   // Get upstream/downstream counts
-  const db = getDb();
-  const upstreamCount = (
-    db.prepare("SELECT COUNT(*) as count FROM edges WHERE to_node = ?").get(nodeId) as { count: number }
-  ).count;
-  const downstreamCount = (
-    db.prepare("SELECT COUNT(*) as count FROM edges WHERE from_node = ?").get(nodeId) as { count: number }
-  ).count;
+  let upstreamCount = 0;
+  let downstreamCount = 0;
+
+  if (isStaticMode() || !getDb) {
+    // In static mode, count edges from the edges list
+    const edges = getEdges();
+    for (const edge of edges) {
+      if (edge.to_node === nodeId) upstreamCount++;
+      if (edge.from_node === nodeId) downstreamCount++;
+    }
+  } else {
+    // SQLite mode - use direct query
+    const db = getDb();
+    upstreamCount = (
+      db.prepare("SELECT COUNT(*) as count FROM edges WHERE to_node = ?").get(nodeId) as { count: number }
+    ).count;
+    downstreamCount = (
+      db.prepare("SELECT COUNT(*) as count FROM edges WHERE from_node = ?").get(nodeId) as { count: number }
+    ).count;
+  }
 
   return {
     id: dbNode.id,
@@ -318,20 +379,26 @@ export function searchByColumn(
     limit?: number;
   }
 ): ColumnSearchResult[] {
-  const db = getDb();
   const limit = options?.limit ?? 20;
-
-  // Search in metadata JSON for column names
-  const searchTerm = `%"name":"${columnName}%`;
-  const results = db
-    .prepare(
-      `SELECT * FROM nodes WHERE metadata LIKE ? LIMIT ?`
-    )
-    .all(searchTerm, limit * 2) as DbNode[]; // Get more to filter
-
   const columnResults: ColumnSearchResult[] = [];
+  const lowerColumnName = columnName.toLowerCase();
 
-  for (const node of results) {
+  // Get nodes to search - either via SQL or in-memory
+  let nodesToSearch: DbNode[];
+
+  if (isStaticMode() || !getDb) {
+    // In static mode, search all nodes with metadata
+    nodesToSearch = getNodes().filter(n => n.metadata);
+  } else {
+    // SQLite mode - use LIKE query for initial filter
+    const db = getDb();
+    const searchTerm = `%"name":"${columnName}%`;
+    nodesToSearch = db
+      .prepare(`SELECT * FROM nodes WHERE metadata LIKE ? LIMIT ?`)
+      .all(searchTerm, limit * 2) as DbNode[];
+  }
+
+  for (const node of nodesToSearch) {
     if (!node.metadata) continue;
 
     try {
@@ -340,7 +407,7 @@ export function searchByColumn(
 
       if (columns) {
         for (const col of columns) {
-          if (col.name.toLowerCase().includes(columnName.toLowerCase())) {
+          if (col.name.toLowerCase().includes(lowerColumnName)) {
             columnResults.push({
               nodeId: node.id,
               nodeName: node.name,
@@ -365,7 +432,8 @@ export function searchByColumn(
 
 /**
  * Search within SQL content to find models that implement specific logic.
- * Uses FTS on sql_content column for efficient pattern matching.
+ * Uses FTS on sql_content column for efficient pattern matching when available,
+ * falls back to in-memory search in static mode.
  */
 export function searchSqlContent(
   pattern: string,
@@ -373,8 +441,48 @@ export function searchSqlContent(
     limit?: number;
   }
 ): SqlSearchResult[] {
-  const db = getDb();
   const limit = options?.limit ?? 10;
+  const results: SqlSearchResult[] = [];
+  const patternLower = pattern.toLowerCase();
+
+  // Helper to extract snippet around match
+  const extractSnippet = (sql: string): string => {
+    const sqlLower = sql.toLowerCase();
+    const matchIndex = sqlLower.indexOf(patternLower);
+    
+    if (matchIndex >= 0) {
+      const start = Math.max(0, matchIndex - 50);
+      const end = Math.min(sql.length, matchIndex + pattern.length + 100);
+      return (start > 0 ? "..." : "") + sql.substring(start, end).trim() + (end < sql.length ? "..." : "");
+    } else {
+      return sql.substring(0, 150).trim() + (sql.length > 150 ? "..." : "");
+    }
+  };
+
+  // In static mode, search in-memory
+  if (isStaticMode() || !getDb) {
+    const allNodes = getNodes();
+    
+    for (const node of allNodes) {
+      if (results.length >= limit) break;
+      if (!node.sql_content) continue;
+      
+      if (node.sql_content.toLowerCase().includes(patternLower)) {
+        results.push({
+          nodeId: node.id,
+          nodeName: node.name,
+          nodeType: node.type,
+          semanticLayer: node.semantic_layer || undefined,
+          matchSnippet: extractSnippet(node.sql_content),
+        });
+      }
+    }
+    
+    return results;
+  }
+
+  // SQLite mode - use FTS
+  const db = getDb();
 
   // Clean pattern for FTS - escape special characters and add wildcards
   const cleanPattern = pattern
@@ -389,8 +497,6 @@ export function searchSqlContent(
     return [];
   }
 
-  const results: SqlSearchResult[] = [];
-
   try {
     // Use FTS to search in sql_content
     const rows = db.prepare(`
@@ -399,34 +505,17 @@ export function searchSqlContent(
       WHERE nodes_fts.sql_content MATCH ?
       AND nodes.sql_content IS NOT NULL
       LIMIT ?
-    `).all(cleanPattern, limit * 2) as DbNode[]; // Get extra to account for potential filtering
+    `).all(cleanPattern, limit * 2) as DbNode[];
 
     for (const row of rows) {
       if (!row.sql_content) continue;
       
-      // Extract a snippet around the match
-      const sql = row.sql_content;
-      const patternLower = pattern.toLowerCase();
-      const sqlLower = sql.toLowerCase();
-      const matchIndex = sqlLower.indexOf(patternLower);
-      
-      let snippet: string;
-      if (matchIndex >= 0) {
-        // Show context around the match
-        const start = Math.max(0, matchIndex - 50);
-        const end = Math.min(sql.length, matchIndex + pattern.length + 100);
-        snippet = (start > 0 ? "..." : "") + sql.substring(start, end).trim() + (end < sql.length ? "..." : "");
-      } else {
-        // If exact match not found (due to FTS tokenization), show start of SQL
-        snippet = sql.substring(0, 150).trim() + (sql.length > 150 ? "..." : "");
-      }
-
       results.push({
         nodeId: row.id,
         nodeName: row.name,
         nodeType: row.type,
         semanticLayer: row.semantic_layer || undefined,
-        matchSnippet: snippet,
+        matchSnippet: extractSnippet(row.sql_content),
       });
 
       if (results.length >= limit) break;
@@ -443,26 +532,12 @@ export function searchSqlContent(
     for (const row of rows) {
       if (!row.sql_content) continue;
       
-      const sql = row.sql_content;
-      const patternLower = pattern.toLowerCase();
-      const sqlLower = sql.toLowerCase();
-      const matchIndex = sqlLower.indexOf(patternLower);
-      
-      let snippet: string;
-      if (matchIndex >= 0) {
-        const start = Math.max(0, matchIndex - 50);
-        const end = Math.min(sql.length, matchIndex + pattern.length + 100);
-        snippet = (start > 0 ? "..." : "") + sql.substring(start, end).trim() + (end < sql.length ? "..." : "");
-      } else {
-        snippet = sql.substring(0, 150).trim() + (sql.length > 150 ? "..." : "");
-      }
-
       results.push({
         nodeId: row.id,
         nodeName: row.name,
         nodeType: row.type,
         semanticLayer: row.semantic_layer || undefined,
-        matchSnippet: snippet,
+        matchSnippet: extractSnippet(row.sql_content),
       });
     }
   }
@@ -479,6 +554,26 @@ export function getGraphStats(): {
   totalFlows: number;
   nodesByType: Record<string, number>;
 } {
+  // In static mode, compute from in-memory data
+  if (isStaticMode() || !getDb) {
+    const nodes = getNodes();
+    const edges = getEdges();
+    const flows = getFlows();
+    
+    const nodesByType: Record<string, number> = {};
+    for (const node of nodes) {
+      nodesByType[node.type] = (nodesByType[node.type] || 0) + 1;
+    }
+    
+    return {
+      totalNodes: nodes.length,
+      totalEdges: edges.length,
+      totalFlows: flows.length,
+      nodesByType,
+    };
+  }
+
+  // SQLite mode - use direct queries
   const db = getDb();
 
   const totalNodes = (db.prepare("SELECT COUNT(*) as count FROM nodes").get() as { count: number }).count;

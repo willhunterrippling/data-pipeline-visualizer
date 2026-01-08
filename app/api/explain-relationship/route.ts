@@ -3,17 +3,110 @@ import {
   getNodeById,
   getRelationalExplanation,
   insertRelationalExplanation,
-  getDb,
+  getEdges,
+  isStaticMode,
   DbNode,
 } from "@/lib/db";
 import { explainRelationship, PathInfo } from "@/lib/ai/relationalExplain";
 import type { GraphNode, NodeMetadata } from "@/lib/types";
+
+// Only import getDb when not in static mode
+let getDb: (() => ReturnType<typeof import("@/lib/db").getDb>) | null = null;
+if (!isStaticMode()) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  getDb = require("@/lib/db").getDb;
+}
+
+/**
+ * Find path using BFS (for static mode).
+ * Returns the path as an array of node IDs including start and end.
+ */
+function findPathBFS(
+  startId: string, 
+  endId: string, 
+  adjacency: Map<string, string[]>
+): string[] | null {
+  if (startId === endId) return [startId];
+  
+  const visited = new Set<string>();
+  const queue: Array<{ nodeId: string; path: string[] }> = [
+    { nodeId: startId, path: [startId] }
+  ];
+  
+  while (queue.length > 0) {
+    const { nodeId, path } = queue.shift()!;
+    
+    if (visited.has(nodeId)) continue;
+    visited.add(nodeId);
+    
+    const neighbors = adjacency.get(nodeId) || [];
+    for (const neighbor of neighbors) {
+      if (neighbor === endId) {
+        return [...path, neighbor];
+      }
+      if (!visited.has(neighbor) && path.length < 10) {
+        queue.push({ nodeId: neighbor, path: [...path, neighbor] });
+      }
+    }
+  }
+  
+  return null;
+}
 
 /**
  * Find the path between two nodes in the graph.
  * Returns direction (upstream/downstream), hop count, and intermediate nodes.
  */
 function findPath(nodeId: string, anchorId: string): PathInfo | null {
+  // In static mode, use BFS with edge list
+  if (isStaticMode() || !getDb) {
+    const edges = getEdges();
+    
+    // Build adjacency for downstream traversal (from -> to)
+    const downstreamAdj = new Map<string, string[]>();
+    for (const edge of edges) {
+      if (!downstreamAdj.has(edge.from_node)) {
+        downstreamAdj.set(edge.from_node, []);
+      }
+      downstreamAdj.get(edge.from_node)!.push(edge.to_node);
+    }
+    
+    // Try to find path from node to anchor (node is upstream of anchor)
+    const upstreamPath = findPathBFS(nodeId, anchorId, downstreamAdj);
+    if (upstreamPath && upstreamPath.length > 1) {
+      const intermediateIds = upstreamPath.slice(1, -1);
+      const intermediateNodes = intermediateIds
+        .map((id) => getNodeById(id))
+        .filter((n): n is DbNode => n !== undefined)
+        .map(dbNodeToGraphNode);
+      
+      return {
+        direction: "upstream",
+        hops: upstreamPath.length - 1,
+        intermediateNodes,
+      };
+    }
+    
+    // Try to find path from anchor to node (node is downstream of anchor)
+    const downstreamPath = findPathBFS(anchorId, nodeId, downstreamAdj);
+    if (downstreamPath && downstreamPath.length > 1) {
+      const intermediateIds = downstreamPath.slice(1, -1);
+      const intermediateNodes = intermediateIds
+        .map((id) => getNodeById(id))
+        .filter((n): n is DbNode => n !== undefined)
+        .map(dbNodeToGraphNode);
+      
+      return {
+        direction: "downstream",
+        hops: downstreamPath.length - 1,
+        intermediateNodes,
+      };
+    }
+    
+    return null;
+  }
+
+  // SQLite mode - use recursive CTE
   const db = getDb();
 
   // First, try to find path from node to anchor (node is upstream of anchor)

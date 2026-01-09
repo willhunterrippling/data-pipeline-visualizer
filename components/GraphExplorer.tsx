@@ -163,12 +163,15 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
         }
         nodesByLayer.get(layer)!.push(node);
         
-        // Priority 1: Check if we have a cached position AT THE SAME LAYER
-        // If layer changed, the node needs to be repositioned
+        // Priority 1: Check if we have ANY cached position for this node
+        // IMPORTANT: We preserve visual position even if layer changed to avoid jarring jumps
+        // during exploration. Only truly new nodes get computed positions.
         const cached = cache.get(node.id);
-        if (cached && cached.relativeLayer === layer) {
-          // Use cached position - layer matches, preserve visual position
+        if (cached) {
+          // Use cached position - preserve visual stability regardless of layer change
           positions.set(node.id, { x: cached.x, y: cached.y });
+          // Update the cached layer to the new value (for future reference)
+          cache.set(node.id, { x: cached.x, y: cached.y, relativeLayer: layer });
         } 
         // Priority 2: Use server-provided position if available (layer changed or no cache)
         else if (node.layoutX !== undefined && node.layoutY !== undefined) {
@@ -832,7 +835,7 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
             
             if (outsideTop) {
               panY = -(bb.y1 * cy.zoom()) + padding;
-            } else if (outsideBottom) {
+            } else             if (outsideBottom) {
               panY = cy.height() - (bb.y2 * cy.zoom()) - padding;
             }
             

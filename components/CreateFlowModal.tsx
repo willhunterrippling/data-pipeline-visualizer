@@ -24,7 +24,7 @@ interface SearchResult {
 interface CreateFlowModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onCreated: (flow: { id: string; name: string; memberCount: number }) => void;
+  onCreated: (flow: { id: string; name: string; memberCount: number; anchorNodes?: string[]; memberNodes?: string[] }) => void;
 }
 
 // Node type colors for badges

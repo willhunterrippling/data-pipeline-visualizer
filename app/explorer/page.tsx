@@ -7,6 +7,7 @@ import SearchBar from "@/components/SearchBar";
 import DepthControl from "@/components/DepthControl";
 import OrientationHeader from "@/components/OrientationHeader";
 import EditFlowModal from "@/components/EditFlowModal";
+import CreateFlowModal from "@/components/CreateFlowModal";
 import PipelineChat from "@/components/PipelineChat";
 import {
   getCachedExplanation,
@@ -178,6 +179,7 @@ function ExplorerContent() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
   const [editFlowModalOpen, setEditFlowModalOpen] = useState(false);
+  const [createFlowModalOpen, setCreateFlowModalOpen] = useState(false);
 
   // Show toast notification
   const showToast = useCallback((message: string, type: "success" | "error" = "success") => {
@@ -202,7 +204,20 @@ function ExplorerContent() {
         if (!res.ok) throw new Error("Failed to load graph");
         
         const data = await res.json();
-        setFlows(data.flows);
+        
+        // Merge server flows with user-created flows from localStorage
+        let allFlows = data.flows;
+        try {
+          const storedFlows = JSON.parse(localStorage.getItem("userCreatedFlows") || "[]");
+          // Filter out any stored flows that might have same ID as server flows
+          const serverFlowIds = new Set(data.flows.map((f: GraphFlow) => f.id));
+          const uniqueStoredFlows = storedFlows.filter((f: GraphFlow) => !serverFlowIds.has(f.id));
+          allFlows = [...data.flows, ...uniqueStoredFlows];
+        } catch {
+          // localStorage not available (SSR) or parse error, ignore
+        }
+        
+        setFlows(allFlows);
         setAllNodes(data.nodes);
 
         // Restore state from URL
@@ -527,6 +542,38 @@ function ExplorerContent() {
     showToast("Flow anchor updated successfully");
   }, [flowId, updateUrl, showToast]);
 
+  // Handle flow creation from create modal
+  const handleFlowCreated = useCallback((newFlow: { id: string; name: string; memberCount: number; anchorNodes?: string[]; memberNodes?: string[] }) => {
+    // Build a full GraphFlow object
+    const fullFlow: GraphFlow = {
+      id: newFlow.id,
+      name: newFlow.name,
+      anchorNodes: newFlow.anchorNodes || [],
+      memberNodes: newFlow.memberNodes || [],
+      userDefined: true,
+    };
+    
+    // Add to flows list
+    setFlows((prev) => [...prev, fullFlow]);
+    
+    // Save to localStorage for persistence on Vercel
+    const storedFlows = JSON.parse(localStorage.getItem("userCreatedFlows") || "[]");
+    storedFlows.push(fullFlow);
+    localStorage.setItem("userCreatedFlows", JSON.stringify(storedFlows));
+    
+    // Select the new flow
+    setFlowId(newFlow.id);
+    
+    // Set anchor to first anchor node
+    if (fullFlow.anchorNodes.length > 0) {
+      const newAnchorId = fullFlow.anchorNodes[0];
+      setAnchorId(newAnchorId);
+      updateUrl(newAnchorId, newFlow.id);
+    }
+    
+    showToast(`Flow "${newFlow.name}" created with ${newFlow.memberCount} nodes`);
+  }, [updateUrl, showToast]);
+
   // Handle chat actions
   const handleChatAction = useCallback((action: ProposedAction) => {
     switch (action.type) {
@@ -567,14 +614,8 @@ function ExplorerContent() {
         break;
       }
       case "create_flow": {
-        // For now, just set the node as anchor
-        // In the future, this could open a "create flow" modal
-        const nodeId = action.payload.anchorNodeId;
-        const node = allNodes.find((n) => n.id === nodeId);
-        if (node) {
-          handleSelectAnchor(node);
-          showToast("Set as anchor. Create flow feature coming soon!");
-        }
+        // Open the create flow modal - user can select anchors there
+        setCreateFlowModalOpen(true);
         break;
       }
     }
@@ -668,6 +709,13 @@ function ExplorerContent() {
         onUpdated={handleFlowUpdated}
       />
 
+      {/* Create Flow Modal */}
+      <CreateFlowModal
+        isOpen={createFlowModalOpen}
+        onClose={() => setCreateFlowModalOpen(false)}
+        onCreated={handleFlowCreated}
+      />
+
       {/* Header */}
       <header className="border-b border-white/10 bg-[#0a0a0f]/80 backdrop-blur-sm z-10">
         <div className="px-4 py-3 flex items-center justify-between">
@@ -725,6 +773,18 @@ function ExplorerContent() {
                 </svg>
               </button>
             )}
+
+            {/* Create Flow Button */}
+            <button
+              onClick={() => setCreateFlowModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 rounded-lg transition-colors text-sm text-emerald-300"
+              title="Create new flow"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New Flow
+            </button>
           </div>
 
           <div className="flex items-center gap-4">

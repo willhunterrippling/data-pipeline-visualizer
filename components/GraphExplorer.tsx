@@ -802,46 +802,74 @@ const GraphExplorer = forwardRef<GraphExplorerRef, GraphExplorerProps>(
       // Redraw swimlanes
       requestAnimationFrame(drawSwimlanes);
       
-      // Smart pan: if new nodes were added, pan to include them without refitting everything
+      // Smart pan: prioritize keeping selected node in view
       if (addedNodeIds.length > 0 && nodesToRemove.length === 0) {
-        // Get bounding box of new nodes
-        const addedNodes = cy.nodes().filter(n => addedNodeIds.includes(n.id()));
-        if (addedNodes.length > 0) {
-          const bb = addedNodes.boundingBox({});
-          const viewport = {
-            x1: -cy.pan().x / cy.zoom(),
-            y1: -cy.pan().y / cy.zoom(),
-            x2: (-cy.pan().x + cy.width()) / cy.zoom(),
-            y2: (-cy.pan().y + cy.height()) / cy.zoom(),
-          };
-          
-          // Check if new nodes are outside viewport
-          const outsideLeft = bb.x1 < viewport.x1;
-          const outsideRight = bb.x2 > viewport.x2;
-          const outsideTop = bb.y1 < viewport.y1;
-          const outsideBottom = bb.y2 > viewport.y2;
-          
-          if (outsideLeft || outsideRight || outsideTop || outsideBottom) {
-            // Pan to include new nodes with some padding
-            let panX = cy.pan().x;
-            let panY = cy.pan().y;
-            const padding = 100 * cy.zoom();
+        // If there's a selected node, center on it instead of panning to all new nodes
+        // This prevents the viewport from jumping away when stretching adds upstream inputs
+        if (wasSelectedId && newNodeIds.has(wasSelectedId)) {
+          const selectedNode = cy.getElementById(wasSelectedId);
+          if (selectedNode.length > 0) {
+            const pos = selectedNode.position();
+            const viewport = {
+              x1: -cy.pan().x / cy.zoom(),
+              y1: -cy.pan().y / cy.zoom(),
+              x2: (-cy.pan().x + cy.width()) / cy.zoom(),
+              y2: (-cy.pan().y + cy.height()) / cy.zoom(),
+            };
             
-            if (outsideLeft) {
-              panX = -(bb.x1 * cy.zoom()) + padding;
-            } else if (outsideRight) {
-              panX = cy.width() - (bb.x2 * cy.zoom()) - padding;
+            // Only pan if the selected node is outside the viewport
+            const nodeX = pos.x;
+            const nodeY = pos.y;
+            const padding = 100;
+            
+            if (nodeX < viewport.x1 + padding || nodeX > viewport.x2 - padding ||
+                nodeY < viewport.y1 + padding || nodeY > viewport.y2 - padding) {
+              // Center on the selected node
+              cy.animate({
+                center: { eles: selectedNode }
+              }, { duration: 300 });
             }
+          }
+        } else {
+          // No selection - pan to include new nodes (original behavior)
+          const addedNodes = cy.nodes().filter(n => addedNodeIds.includes(n.id()));
+          if (addedNodes.length > 0) {
+            const bb = addedNodes.boundingBox({});
+            const viewport = {
+              x1: -cy.pan().x / cy.zoom(),
+              y1: -cy.pan().y / cy.zoom(),
+              x2: (-cy.pan().x + cy.width()) / cy.zoom(),
+              y2: (-cy.pan().y + cy.height()) / cy.zoom(),
+            };
             
-            if (outsideTop) {
-              panY = -(bb.y1 * cy.zoom()) + padding;
-            } else             if (outsideBottom) {
-              panY = cy.height() - (bb.y2 * cy.zoom()) - padding;
+            // Check if new nodes are outside viewport
+            const outsideLeft = bb.x1 < viewport.x1;
+            const outsideRight = bb.x2 > viewport.x2;
+            const outsideTop = bb.y1 < viewport.y1;
+            const outsideBottom = bb.y2 > viewport.y2;
+            
+            if (outsideLeft || outsideRight || outsideTop || outsideBottom) {
+              // Pan to include new nodes with some padding
+              let panX = cy.pan().x;
+              let panY = cy.pan().y;
+              const padding = 100 * cy.zoom();
+              
+              if (outsideLeft) {
+                panX = -(bb.x1 * cy.zoom()) + padding;
+              } else if (outsideRight) {
+                panX = cy.width() - (bb.x2 * cy.zoom()) - padding;
+              }
+              
+              if (outsideTop) {
+                panY = -(bb.y1 * cy.zoom()) + padding;
+              } else if (outsideBottom) {
+                panY = cy.height() - (bb.y2 * cy.zoom()) - padding;
+              }
+              
+              cy.animate({
+                pan: { x: panX, y: panY }
+              }, { duration: 300 });
             }
-            
-            cy.animate({
-              pan: { x: panX, y: panY }
-            }, { duration: 300 });
           }
         }
       } else if (cy.nodes().length > 0 && currentNodeIds.size === 0) {

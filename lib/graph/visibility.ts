@@ -455,6 +455,31 @@ export function computeVisibility(
   // If stretching, add path from anchor to focus first
   // All nodes in the lineage path are visible - they are "in the flow" by definition
   if (anchorToFocusPath.length > 1 && focusDirection) {
+    // Add immediate neighbors (1 hop) of path nodes to ensure sibling inputs/outputs are visible
+    // This prevents losing nodes when stretching past them
+    const pathNeighborsToAdd: Array<{ nodeId: string; fromPathNode: string; direction: "upstream" | "downstream"; pathNodeLayer: number }> = [];
+    
+    for (let i = 1; i < anchorToFocusPath.length; i++) {
+      const pathNodeId = anchorToFocusPath[i];
+      const pathNodeLayer = focusDirection === "upstream" ? -i : i;
+      
+      // Get all inputs (upstream neighbors) of this path node
+      const inputs = upstreamEdges.get(pathNodeId) || new Set();
+      for (const inputId of inputs) {
+        if (!lineageNodeIds.has(inputId) && inputId !== state.anchor && !anchorToFocusPath.includes(inputId)) {
+          pathNeighborsToAdd.push({ nodeId: inputId, fromPathNode: pathNodeId, direction: "upstream", pathNodeLayer });
+        }
+      }
+      
+      // Get all outputs (downstream neighbors) of this path node
+      const outputs = downstreamEdges.get(pathNodeId) || new Set();
+      for (const outputId of outputs) {
+        if (!lineageNodeIds.has(outputId) && outputId !== state.anchor && !anchorToFocusPath.includes(outputId)) {
+          pathNeighborsToAdd.push({ nodeId: outputId, fromPathNode: pathNodeId, direction: "downstream", pathNodeLayer });
+        }
+      }
+    }
+    
     for (let i = 1; i < anchorToFocusPath.length; i++) {
       const pathNodeId = anchorToFocusPath[i];
       if (visibleNodeIds.has(pathNodeId)) continue;
@@ -473,6 +498,32 @@ export function computeVisibility(
         relativeLayer,
       });
       visibleNodeIds.add(pathNodeId);
+    }
+    
+    // Add path neighbors (sibling inputs/outputs of path nodes)
+    for (const neighbor of pathNeighborsToAdd) {
+      if (visibleNodeIds.has(neighbor.nodeId)) continue;
+      
+      const neighborNode = nodeMap.get(neighbor.nodeId);
+      if (!neighborNode) continue;
+      
+      // Place neighbor at same layer as path node's neighbor direction
+      // If it's an input to path node at layer 3, place it at layer 2 (one hop upstream)
+      // If it's an output of path node at layer 3, place it at layer 4 (one hop downstream)
+      const relativeLayer = neighbor.direction === "upstream" 
+        ? neighbor.pathNodeLayer - 1 
+        : neighbor.pathNodeLayer + 1;
+      
+      visibleNodes.push({
+        ...neighborNode,
+        visibilityReason: {
+          type: neighbor.direction,
+          hops: Math.abs(relativeLayer),
+          path: [state.anchor!, neighbor.fromPathNode, neighbor.nodeId],
+        },
+        relativeLayer,
+      });
+      visibleNodeIds.add(neighbor.nodeId);
     }
   }
 

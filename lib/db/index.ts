@@ -122,13 +122,17 @@ export interface UsageStats {
 
 export interface DbJob {
   id: string;
-  status: string;
+  status: string;  // pending, running, completed, failed, waiting_for_input
   stage: string | null;
   stage_progress: number;
   message: string | null;
   error: string | null;
   activity_log: string | null;
   usage_stats: string | null;
+  skipped_stages: string | null;  // JSON array of stage IDs
+  waiting_for: string | null;     // What input we're waiting for
+  waiting_data: string | null;    // JSON data for the waiting UI
+  selected_schemas: string | null; // JSON array of selected Snowflake schemas
   started_at: string;
   updated_at: string;
 }
@@ -445,6 +449,49 @@ export function getUsageStats(id: string): UsageStats | null {
     return staticAdapter.getUsageStats(id);
   }
   return getSqliteAdapterSync().getUsageStats(id);
+}
+
+export function markStageSkipped(id: string, stageId: string): void {
+  if (USE_STATIC_MODE) {
+    return staticAdapter.markStageSkipped(id, stageId);
+  }
+  return getSqliteAdapterSync().markStageSkipped(id, stageId);
+}
+
+export function getSkippedStages(id: string): string[] {
+  if (USE_STATIC_MODE) {
+    return staticAdapter.getSkippedStages(id);
+  }
+  return getSqliteAdapterSync().getSkippedStages(id);
+}
+
+// Schema selection for Snowflake discovery
+export function setJobWaitingForSchemas(id: string, schemas: string[]): void {
+  if (USE_STATIC_MODE) {
+    return staticAdapter.setJobWaitingForSchemas(id, schemas);
+  }
+  return getSqliteAdapterSync().setJobWaitingForSchemas(id, schemas);
+}
+
+export function submitSchemaSelection(id: string, selectedSchemas: string[]): void {
+  if (USE_STATIC_MODE) {
+    return staticAdapter.submitSchemaSelection(id, selectedSchemas);
+  }
+  return getSqliteAdapterSync().submitSchemaSelection(id, selectedSchemas);
+}
+
+export function getSelectedSchemas(id: string): string[] | null {
+  if (USE_STATIC_MODE) {
+    return staticAdapter.getSelectedSchemas(id);
+  }
+  return getSqliteAdapterSync().getSelectedSchemas(id);
+}
+
+export function getWaitingData(id: string): { waitingFor: string; data: unknown } | null {
+  if (USE_STATIC_MODE) {
+    return staticAdapter.getWaitingData(id);
+  }
+  return getSqliteAdapterSync().getWaitingData(id);
 }
 
 // Search operations

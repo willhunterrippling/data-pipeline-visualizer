@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getJob, getActivityLog, getUsageStats } from "@/lib/db";
+import { getJob, getActivityLog, getUsageStats, getSkippedStages, getWaitingData } from "@/lib/db";
 import { INDEXING_STAGES } from "@/lib/types";
 
 export async function GET(
@@ -31,6 +31,12 @@ export async function GET(
   // Get usage stats (only relevant when completed)
   const usageStats = job.status === "completed" ? getUsageStats(jobId) : null;
 
+  // Get skipped stages for UI warning indicators
+  const skippedStages = getSkippedStages(jobId);
+
+  // Get waiting data if job is waiting for input
+  const waitingData = job.status === "waiting_for_input" ? getWaitingData(jobId) : null;
+
   return NextResponse.json({
     id: job.id,
     status: job.status,
@@ -42,6 +48,9 @@ export async function GET(
     error: job.error,
     activityLog,
     usageStats,
+    skippedStages,
+    waitingFor: waitingData?.waitingFor,
+    waitingData: waitingData?.data,
     startedAt: job.started_at,
     updatedAt: job.updated_at,
   });

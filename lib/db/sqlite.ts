@@ -460,6 +460,67 @@ export function getUsageStats(id: string): UsageStats | null {
   return JSON.parse(job.usage_stats);
 }
 
+export function markStageSkipped(id: string, stageId: string): void {
+  const db = getDb();
+  const job = getJob(id);
+  if (!job) return;
+
+  const skipped: string[] = job.skipped_stages ? JSON.parse(job.skipped_stages) : [];
+  if (!skipped.includes(stageId)) {
+    skipped.push(stageId);
+  }
+
+  db.prepare("UPDATE jobs SET skipped_stages = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(JSON.stringify(skipped), id);
+}
+
+export function getSkippedStages(id: string): string[] {
+  const job = getJob(id);
+  if (!job || !job.skipped_stages) return [];
+  return JSON.parse(job.skipped_stages);
+}
+
+// Schema selection for Snowflake discovery
+export function setJobWaitingForSchemas(id: string, schemas: string[]): void {
+  const db = getDb();
+  db.prepare(`
+    UPDATE jobs 
+    SET status = 'waiting_for_input', 
+        waiting_for = 'schema_selection',
+        waiting_data = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(JSON.stringify({ schemas }), id);
+}
+
+export function submitSchemaSelection(id: string, selectedSchemas: string[]): void {
+  const db = getDb();
+  db.prepare(`
+    UPDATE jobs 
+    SET status = 'running',
+        waiting_for = NULL,
+        waiting_data = NULL,
+        selected_schemas = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(JSON.stringify(selectedSchemas), id);
+}
+
+export function getSelectedSchemas(id: string): string[] | null {
+  const job = getJob(id);
+  if (!job || !job.selected_schemas) return null;
+  return JSON.parse(job.selected_schemas);
+}
+
+export function getWaitingData(id: string): { waitingFor: string; data: unknown } | null {
+  const job = getJob(id);
+  if (!job || !job.waiting_for) return null;
+  return {
+    waitingFor: job.waiting_for,
+    data: job.waiting_data ? JSON.parse(job.waiting_data) : null,
+  };
+}
+
 // Search operations
 export function searchNodes(query: string, limit = 50): DbNode[] {
   const db = getDb();

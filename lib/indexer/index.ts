@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import { join } from "path";
 import {
   getDb,
+  getJob,
   insertNodes,
   insertEdges,
   insertCitations,
@@ -20,6 +21,9 @@ import {
   updateNodeImportanceScores,
   insertLayerNames,
   insertAnchorCandidates,
+  markStageSkipped,
+  setJobWaitingForSchemas,
+  getSelectedSchemas,
   DbNode,
   DbEdge,
   DbCitation,
@@ -35,7 +39,8 @@ import { parseAirflowDags, type ExternalSystemDetection } from "./airflowParser"
 import { parseExternalSystems, KNOWN_EXTERNAL_SYSTEMS } from "./externalParser";
 import { inferExternalSystems, summarizeDetections } from "./externalInference";
 import { linkCrossRepo } from "./linker";
-import { enrichWithSnowflakeMetadata } from "./snowflakeMetadata";
+import { enrichWithSnowflakeMetadata, discoverSnowflakeTables, getSnowflakeConfig, hasSnowflakeCredentials, type SnowflakeDiscoveryResult } from "./snowflakeMetadata";
+import { connect, getSchemas, disconnect } from "../snowflake/client";
 import { inferGroups as aiInferGroups } from "../ai/grouping";
 import { proposeFlows as aiProposeFlows } from "../ai/flows";
 import { generateLayerNames } from "../ai/layerNaming";
@@ -110,6 +115,9 @@ export class Indexer {
   
   // External systems detected from Airflow DAGs
   private airflowExternalSystems: ExternalSystemDetection[] = [];
+  
+  // Snowflake discovery results for final summary
+  private snowflakeDiscoveryResult: SnowflakeDiscoveryResult | null = null;
 
   constructor(jobId: string, config: IndexerConfig) {
     this.jobId = jobId;
@@ -181,10 +189,13 @@ export class Indexer {
       // Stage 5.5: Infer external destinations from SQL patterns
       await this.stageInferExternalDestinations();
 
-      // Stage 6: Snowflake metadata (placeholder for now)
+      // Stage 6: Snowflake metadata enrichment
       await this.stageSnowflakeMetadata();
 
-      // Stage 6: Cross-repo linking
+      // Stage 7: Snowflake table discovery
+      await this.stageSnowflakeDiscovery();
+
+      // Stage 8: Cross-repo linking
       await this.stageCrossRepoLink();
 
       // Stage 6.5: Pre-compute layout (after nodes/edges are stored)
@@ -222,12 +233,17 @@ export class Indexer {
         );
       }
 
-      // Mark complete
+      // Mark complete with summary including Snowflake discovery stats
+      const sfStats = this.snowflakeDiscoveryResult?.stats;
+      const sfSummary = sfStats && sfStats.newTablesAdded > 0 
+        ? ` (${sfStats.newTablesAdded} from Snowflake discovery)` 
+        : "";
+      
       updateJob(this.jobId, {
         status: "completed",
         stage: "complete",
         stage_progress: 100,
-        message: `Indexed ${this.allNodes.length} nodes and ${this.allEdges.length} edges`,
+        message: `Indexed ${this.allNodes.length} nodes${sfSummary} and ${this.allEdges.length} edges`,
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -353,6 +369,7 @@ export class Indexer {
 
   private async stageSnowflakeMetadata(): Promise<void> {
     if (!this.config.snowflakeEnabled) {
+      markStageSkipped(this.jobId, "snowflake_metadata");
       this.updateProgress("snowflake_metadata", 100, "Snowflake integration disabled");
       return;
     }
@@ -363,12 +380,168 @@ export class Indexer {
 
     if (result.errors.length > 0) {
       console.warn("Snowflake enrichment errors:", result.errors);
+      // Mark as skipped if there were connection errors
+      if (result.enrichedCount === 0) {
+        markStageSkipped(this.jobId, "snowflake_metadata");
+      }
     }
 
     this.updateProgress(
       "snowflake_metadata",
       100,
       `Enriched ${result.enrichedCount} nodes with Snowflake metadata`
+    );
+  }
+
+  /**
+   * Discover all tables in Snowflake that aren't already in the graph.
+   * Creates nodes for raw tables and links them to models that reference them.
+   */
+  /**
+   * Wait for user to select schemas from the UI.
+   * Polls the job record until selected_schemas is populated.
+   */
+  private async waitForSchemaSelection(): Promise<string[] | null> {
+    const POLL_INTERVAL = 500; // ms
+    const MAX_WAIT = 5 * 60 * 1000; // 5 minutes
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < MAX_WAIT) {
+      const job = getJob(this.jobId);
+      
+      // Check if job was cancelled or failed
+      if (!job || job.status === "failed") {
+        return null;
+      }
+      
+      // Check if user submitted selection
+      if (job.status === "running" && job.selected_schemas) {
+        return JSON.parse(job.selected_schemas);
+      }
+      
+      // Wait before polling again
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+    }
+
+    // Timeout - user didn't select in time
+    return null;
+  }
+
+  private async stageSnowflakeDiscovery(): Promise<void> {
+    if (!this.config.snowflakeEnabled) {
+      markStageSkipped(this.jobId, "snowflake_discovery");
+      this.updateProgress("snowflake_discovery", 100, "Snowflake discovery disabled");
+      return;
+    }
+
+    // Check for credentials
+    if (!hasSnowflakeCredentials()) {
+      markStageSkipped(this.jobId, "snowflake_discovery");
+      this.log("⚠️ Snowflake credentials not configured");
+      this.updateProgress("snowflake_discovery", 100, "⚠️ Skipped: Credentials not configured");
+      return;
+    }
+
+    this.updateProgress("snowflake_discovery", 5, "Connecting to Snowflake to fetch schemas...");
+
+    const config = getSnowflakeConfig();
+
+    // Step 1: Connect and get available schemas
+    let availableSchemas: string[];
+    try {
+      await connect(config);
+      const allSchemas = await getSchemas(config.database);
+      
+      // Filter out system and dev/test schemas
+      availableSchemas = allSchemas.filter((schema) => {
+        const upper = schema.toUpperCase();
+        if (upper === "INFORMATION_SCHEMA" || upper === "PUBLIC") return false;
+        if (upper.includes("_DEV") || upper.includes("_TEST")) return false;
+        return true;
+      }).sort();
+
+      await disconnect();
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      markStageSkipped(this.jobId, "snowflake_discovery");
+      this.log(`⚠️ Snowflake connection failed: ${msg}`);
+      this.updateProgress("snowflake_discovery", 100, `⚠️ Skipped: ${msg}`);
+      return;
+    }
+
+    if (availableSchemas.length === 0) {
+      markStageSkipped(this.jobId, "snowflake_discovery");
+      this.log("⚠️ No schemas found in Snowflake");
+      this.updateProgress("snowflake_discovery", 100, "⚠️ Skipped: No schemas found");
+      return;
+    }
+
+    this.log(`Found ${availableSchemas.length} schemas in Snowflake`);
+    this.updateProgress("snowflake_discovery", 10, `Found ${availableSchemas.length} schemas. Waiting for selection...`);
+
+    // Step 2: Set job to waiting state and wait for user selection
+    setJobWaitingForSchemas(this.jobId, availableSchemas);
+
+    const selectedSchemas = await this.waitForSchemaSelection();
+
+    if (!selectedSchemas || selectedSchemas.length === 0) {
+      markStageSkipped(this.jobId, "snowflake_discovery");
+      this.log("⚠️ Schema selection cancelled or timed out");
+      this.updateProgress("snowflake_discovery", 100, "⚠️ Skipped: No schemas selected");
+      return;
+    }
+
+    this.log(`User selected ${selectedSchemas.length} schemas: ${selectedSchemas.slice(0, 5).join(", ")}${selectedSchemas.length > 5 ? "..." : ""}`);
+    this.updateProgress("snowflake_discovery", 15, `Discovering tables from ${selectedSchemas.length} schemas...`);
+
+    // Step 3: Run discovery with selected schemas
+    const existingNodeIds = new Set(this.allNodes.map(n => n.id));
+
+    const result = await discoverSnowflakeTables(
+      existingNodeIds,
+      this.allNodes,
+      (progress, message) => {
+        // Map 0-100 to 15-100
+        const mappedProgress = 15 + Math.floor(progress * 0.85);
+        this.updateProgress("snowflake_discovery", mappedProgress, message);
+      },
+      selectedSchemas // Pass selected schemas to filter
+    );
+
+    // Store result for final summary
+    this.snowflakeDiscoveryResult = result;
+
+    // Handle skipped case
+    if (result.skipped) {
+      markStageSkipped(this.jobId, "snowflake_discovery");
+      this.log(`⚠️ Snowflake discovery skipped: ${result.skipReason}`);
+      this.updateProgress("snowflake_discovery", 100, `⚠️ Skipped: ${result.skipReason}`);
+      return;
+    }
+
+    // Log any errors
+    if (result.errors.length > 0) {
+      for (const error of result.errors) {
+        console.warn("Snowflake discovery error:", error);
+      }
+    }
+
+    // Add discovered nodes and edges to our collections
+    if (result.nodes.length > 0) {
+      this.allNodes.push(...result.nodes);
+      this.log(`Snowflake discovery: Found ${result.stats.totalTablesInSnowflake} tables across ${result.stats.schemasScanned.length} schemas`);
+      this.log(`Snowflake discovery: Added ${result.stats.newTablesAdded} new tables (${result.stats.tablesAlreadyInGraph} already in graph)`);
+    }
+
+    if (result.edges.length > 0) {
+      this.allEdges.push(...result.edges);
+      this.log(`Snowflake discovery: Created ${result.stats.edgesCreated} edges from SQL references`);
+    }
+
+    this.updateProgress(
+      "snowflake_discovery",
+      100,
+      `Discovered ${result.stats.newTablesAdded} tables, ${result.stats.edgesCreated} edges from Snowflake`
     );
   }
 

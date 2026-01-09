@@ -101,13 +101,17 @@ CREATE TABLE IF NOT EXISTS relational_explanations (
 
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
-    status TEXT NOT NULL,          -- pending, running, completed, failed
+    status TEXT NOT NULL,          -- pending, running, completed, failed, waiting_for_input
     stage TEXT,
     stage_progress INTEGER DEFAULT 0,  -- 0-100 within current stage
     message TEXT,
     error TEXT,
     activity_log TEXT,             -- JSON array of {timestamp, message}
     usage_stats TEXT,              -- JSON: {totalInputTokens, totalOutputTokens, totalCalls, estimatedCostUsd}
+    skipped_stages TEXT,           -- JSON array of stage IDs that were skipped/failed gracefully
+    waiting_for TEXT,              -- What input we're waiting for: schema_selection, etc.
+    waiting_data TEXT,             -- JSON: Data for the waiting UI (e.g., available schemas)
+    selected_schemas TEXT,         -- JSON array of user-selected Snowflake schemas
     started_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
 );

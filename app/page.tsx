@@ -17,7 +17,7 @@ interface UsageStats {
 
 interface JobStatus {
   id: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "waiting_for_input";
   stage?: string;
   stageName?: string;
   stageProgress: number;
@@ -26,6 +26,9 @@ interface JobStatus {
   error?: string;
   activityLog?: ActivityLogEntry[];
   usageStats?: UsageStats | null;
+  skippedStages?: string[];
+  waitingFor?: string;
+  waitingData?: { schemas?: string[] };
 }
 
 interface GraphStats {
@@ -50,6 +53,11 @@ export default function Home() {
   const [existingData, setExistingData] = useState<{ nodes: number; edges: number } | null>(null);
   const [isCheckingData, setIsCheckingData] = useState(true);
   const [isStaticMode, setIsStaticMode] = useState(IS_STATIC_MODE);
+  
+  // Schema selection state
+  const [selectedSchemas, setSelectedSchemas] = useState<Set<string>>(new Set());
+  const [isSubmittingSchemas, setIsSubmittingSchemas] = useState(false);
+  const [schemaSearchQuery, setSchemaSearchQuery] = useState("");
 
   // Detect static mode on mount (check if ingest endpoint is available)
   useEffect(() => {
@@ -58,6 +66,28 @@ export default function Home() {
       setIsStaticMode(true);
     }
   }, []);
+
+  // Load last selected schemas from localStorage when schema selection is needed
+  useEffect(() => {
+    if (jobStatus?.status === "waiting_for_input" && jobStatus?.waitingFor === "schema_selection") {
+      const lastSelection = localStorage.getItem("lastSelectedSchemas");
+      if (lastSelection) {
+        try {
+          const parsed = JSON.parse(lastSelection);
+          if (Array.isArray(parsed)) {
+            // Only pre-select schemas that are still available
+            const available = new Set(jobStatus.waitingData?.schemas || []);
+            const validSelection = parsed.filter((s: string) => available.has(s));
+            if (validSelection.length > 0) {
+              setSelectedSchemas(new Set(validSelection));
+            }
+          }
+        } catch {
+          // Ignore invalid stored data
+        }
+      }
+    }
+  }, [jobStatus?.status, jobStatus?.waitingFor, jobStatus?.waitingData?.schemas]);
 
   // Check for existing indexed data on mount
   useEffect(() => {
@@ -102,8 +132,8 @@ export default function Home() {
             flows: graph.flows.length,
           });
         }
-      } else if (status.status === "running" || status.status === "pending") {
-        // Continue polling
+      } else if (status.status === "running" || status.status === "pending" || status.status === "waiting_for_input") {
+        // Continue polling (for waiting_for_input, the UI will show a modal)
         setTimeout(() => pollStatus(id), 1000);
       }
     } catch (error) {
@@ -164,6 +194,89 @@ export default function Home() {
     } finally {
       setIsResetting(false);
     }
+  }
+
+  async function handleSubmitSchemas() {
+    if (!jobId || selectedSchemas.size === 0) return;
+    
+    setIsSubmittingSchemas(true);
+    try {
+      const schemasArray = Array.from(selectedSchemas);
+      
+      // Save to localStorage for next time
+      localStorage.setItem("lastSelectedSchemas", JSON.stringify(schemasArray));
+      
+      const res = await fetch("/api/snowflake/select-schemas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId, selectedSchemas: schemasArray }),
+      });
+      
+      if (!res.ok) {
+        const error = await res.json();
+        console.error("Failed to submit schemas:", error);
+      }
+      
+      // Clear selection state
+      setSelectedSchemas(new Set());
+      setSchemaSearchQuery("");
+    } catch (error) {
+      console.error("Failed to submit schemas:", error);
+    } finally {
+      setIsSubmittingSchemas(false);
+    }
+  }
+
+  function handleSelectAllSchemas() {
+    const schemas = jobStatus?.waitingData?.schemas || [];
+    setSelectedSchemas(new Set(schemas));
+  }
+
+  function handleClearAllSchemas() {
+    setSelectedSchemas(new Set());
+  }
+
+  function handleToggleSchema(schema: string) {
+    setSelectedSchemas(prev => {
+      const next = new Set(prev);
+      if (next.has(schema)) {
+        next.delete(schema);
+      } else {
+        next.add(schema);
+      }
+      return next;
+    });
+  }
+
+  function handleLoadLastSelection() {
+    const lastSelection = localStorage.getItem("lastSelectedSchemas");
+    if (lastSelection) {
+      try {
+        const parsed = JSON.parse(lastSelection);
+        if (Array.isArray(parsed)) {
+          const available = new Set(jobStatus?.waitingData?.schemas || []);
+          const validSelection = parsed.filter((s: string) => available.has(s));
+          setSelectedSchemas(new Set(validSelection));
+        }
+      } catch {
+        // Ignore invalid stored data
+      }
+    }
+  }
+
+  function handleSkipSnowflakeDiscovery() {
+    // Submit empty selection to skip
+    if (!jobId) return;
+    setIsSubmittingSchemas(true);
+    fetch("/api/snowflake/select-schemas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobId, selectedSchemas: [] }),
+    }).finally(() => {
+      setIsSubmittingSchemas(false);
+      setSelectedSchemas(new Set());
+      setSchemaSearchQuery("");
+    });
   }
 
   return (
@@ -380,6 +493,7 @@ export default function Home() {
                     const isActive = stage.id === jobStatus.stage;
                     const isComplete = currentStageIndex > index;
                     const isPending = currentStageIndex < index;
+                    const isSkipped = jobStatus.skippedStages?.includes(stage.id);
 
                     return (
                       <div
@@ -387,6 +501,8 @@ export default function Home() {
                         className={`flex items-center gap-4 p-3 rounded-lg transition-colors ${
                           isActive
                             ? "bg-white/10"
+                            : isSkipped
+                            ? "bg-amber-500/10"
                             : isComplete
                             ? "bg-emerald-500/10"
                             : "bg-white/5"
@@ -394,14 +510,20 @@ export default function Home() {
                       >
                         <div
                           className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-mono ${
-                            isComplete
+                            isSkipped
+                              ? "bg-amber-500 text-black"
+                              : isComplete
                               ? "bg-emerald-500 text-black"
                               : isActive
                               ? "bg-cyan-500 text-black"
                               : "bg-white/20 text-white/40"
                           }`}
                         >
-                          {isComplete ? (
+                          {isSkipped ? (
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                          ) : isComplete ? (
                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                             </svg>
@@ -410,8 +532,9 @@ export default function Home() {
                           )}
                         </div>
                         <div className="flex-1">
-                          <span className={isPending ? "text-white/40" : "text-white"}>
+                          <span className={isPending ? "text-white/40" : isSkipped ? "text-amber-400" : "text-white"}>
                             {stage.name}
+                            {isSkipped && <span className="ml-2 text-xs text-amber-400/70">(skipped)</span>}
                           </span>
                         </div>
                         {isActive && (
@@ -581,6 +704,123 @@ export default function Home() {
                 className="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-400 text-white transition-colors font-medium disabled:opacity-50"
               >
                 {isResetting ? "Resetting..." : "Reset All Data"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Schema Selection Modal */}
+      {jobStatus?.status === "waiting_for_input" && jobStatus?.waitingFor === "schema_selection" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#1a1a24] rounded-xl border border-white/10 p-6 max-w-2xl w-full mx-4 shadow-2xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-cyan-500/20 flex items-center justify-center">
+                <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold">Select Snowflake Schemas</h3>
+                <p className="text-sm text-white/50">
+                  {jobStatus.waitingData?.schemas?.length || 0} schemas available
+                </p>
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-2 mb-4 flex-wrap">
+              <button
+                onClick={handleSelectAllSchemas}
+                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors text-sm font-medium"
+              >
+                Select All
+              </button>
+              <button
+                onClick={handleClearAllSchemas}
+                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors text-sm font-medium"
+              >
+                Clear All
+              </button>
+              {localStorage.getItem("lastSelectedSchemas") && (
+                <button
+                  onClick={handleLoadLastSelection}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 transition-colors text-sm font-medium"
+                >
+                  Use Last Selection
+                </button>
+              )}
+              <div className="flex-1" />
+              <span className="text-sm text-white/50 self-center">
+                {selectedSchemas.size} selected
+              </span>
+            </div>
+
+            {/* Search */}
+            <div className="relative mb-4">
+              <input
+                type="text"
+                placeholder="Search schemas..."
+                value={schemaSearchQuery}
+                onChange={(e) => setSchemaSearchQuery(e.target.value)}
+                className="w-full px-4 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-white/40 focus:outline-none focus:border-cyan-500/50"
+              />
+              {schemaSearchQuery && (
+                <button
+                  onClick={() => setSchemaSearchQuery("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 hover:text-white/60"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+
+            {/* Schema list */}
+            <div className="flex-1 overflow-y-auto min-h-0 border border-white/10 rounded-lg bg-white/5">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-1 p-2">
+                {(jobStatus.waitingData?.schemas || [])
+                  .filter((schema: string) => 
+                    !schemaSearchQuery || 
+                    schema.toLowerCase().includes(schemaSearchQuery.toLowerCase())
+                  )
+                  .map((schema: string) => (
+                    <label
+                      key={schema}
+                      className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+                        selectedSchemas.has(schema)
+                          ? "bg-cyan-500/20 border border-cyan-500/40"
+                          : "bg-white/5 hover:bg-white/10 border border-transparent"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedSchemas.has(schema)}
+                        onChange={() => handleToggleSchema(schema)}
+                        className="w-4 h-4 rounded border-white/30 bg-white/10 text-cyan-500 focus:ring-cyan-500/50"
+                      />
+                      <span className="text-sm truncate" title={schema}>
+                        {schema}
+                      </span>
+                    </label>
+                  ))}
+              </div>
+            </div>
+
+            {/* Footer actions */}
+            <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-white/10">
+              <button
+                onClick={handleSkipSnowflakeDiscovery}
+                className="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors font-medium text-white/70"
+                disabled={isSubmittingSchemas}
+              >
+                Skip Discovery
+              </button>
+              <button
+                onClick={handleSubmitSchemas}
+                disabled={isSubmittingSchemas || selectedSchemas.size === 0}
+                className="px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-500 to-emerald-500 hover:from-cyan-400 hover:to-emerald-400 text-white transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSubmittingSchemas ? "Submitting..." : `Discover ${selectedSchemas.size} Schema${selectedSchemas.size !== 1 ? "s" : ""}`}
               </button>
             </div>
           </div>

@@ -412,6 +412,30 @@ export function getUsageStats(_id: string): UsageStats | null {
   return null;
 }
 
+export function markStageSkipped(_id: string, _stageId: string): void {
+  // No-op in static mode
+}
+
+export function getSkippedStages(_id: string): string[] {
+  return [];
+}
+
+export function setJobWaitingForSchemas(_id: string, _schemas: string[]): void {
+  // No-op in static mode
+}
+
+export function submitSchemaSelection(_id: string, _selectedSchemas: string[]): void {
+  // No-op in static mode
+}
+
+export function getSelectedSchemas(_id: string): string[] | null {
+  return null;
+}
+
+export function getWaitingData(_id: string): { waitingFor: string; data: unknown } | null {
+  return null;
+}
+
 export function clearAllData(_options?: { preserveExplanations?: boolean }): never {
   throwReadOnly();
 }

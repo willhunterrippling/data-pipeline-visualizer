@@ -6,6 +6,7 @@ export type NodeSubtype =
   | "dbt_seed" 
   | "airflow_table" 
   | "snowflake_native" 
+  | "snowflake_raw"  // Raw Snowflake tables discovered via Snowflake integration
   | "external_feed"
   // External system subtypes (from dbt exposures and external config)
   | "dashboard"
@@ -55,6 +56,9 @@ export interface NodeMetadata {
   filePath?: string;
   lineStart?: number;
   lineEnd?: number;
+  // Snowflake-specific metadata
+  snowflakeType?: string;  // TABLE or VIEW
+  snowflakeSchema?: string;
 }
 
 export interface ColumnInfo {
@@ -77,6 +81,7 @@ export interface GraphEdge {
 export interface EdgeMetadata {
   sqlSnippet?: string;
   transformationType?: string;
+  inferredFrom?: string;  // How the edge was discovered (e.g., "sql-scan")
 }
 
 // Group types
@@ -139,10 +144,11 @@ export const INDEXING_STAGES = [
   { id: "parse_manifest", name: "Parsing dbt manifest", startPct: 10, endPct: 25 },
   { id: "parse_airflow", name: "Parsing Airflow DAGs", startPct: 25, endPct: 40 },
   { id: "parse_sql", name: "Extracting SQL dependencies", startPct: 40, endPct: 48 },
-  { id: "parse_externals", name: "Discovering external consumers", startPct: 48, endPct: 55 },
-  { id: "snowflake_metadata", name: "Fetching Snowflake metadata", startPct: 55, endPct: 62 },
-  { id: "cross_repo_link", name: "Linking & layout", startPct: 62, endPct: 75 },
-  { id: "ai_grouping", name: "Semantic classification & layer naming", startPct: 75, endPct: 90 },
+  { id: "parse_externals", name: "Discovering external consumers", startPct: 48, endPct: 53 },
+  { id: "snowflake_metadata", name: "Fetching Snowflake metadata", startPct: 53, endPct: 58 },
+  { id: "snowflake_discovery", name: "Discovering Snowflake tables", startPct: 58, endPct: 68 },
+  { id: "cross_repo_link", name: "Linking & layout", startPct: 68, endPct: 78 },
+  { id: "ai_grouping", name: "Semantic classification & layer naming", startPct: 78, endPct: 90 },
   { id: "ai_flows", name: "AI: Proposing flows", startPct: 90, endPct: 95 },
   { id: "precompute_explanations", name: "Pre-computing explanations", startPct: 95, endPct: 100 },
 ] as const;

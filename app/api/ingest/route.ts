@@ -21,7 +21,7 @@ export async function POST() {
   const config: IndexerConfig = {
     dbtPath: process.env.RIPPLING_DBT_PATH || "~/Documents/GitHub/rippling-dbt",
     airflowPath: process.env.AIRFLOW_DAGS_PATH || "~/Documents/GitHub/airflow-dags",
-    snowflakeEnabled: false, // Disabled for MVP Day 1
+    snowflakeEnabled: true, // Enables Snowflake metadata enrichment and table discovery
   };
 
   // Expand ~ to home directory

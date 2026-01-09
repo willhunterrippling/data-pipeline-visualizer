@@ -30,24 +30,27 @@ let connection: snowflake.Connection | null = null;
 
 /**
  * Create a Snowflake connection with SSO (externalbrowser) auth
+ * Uses connectAsync() which is required for external browser authentication
  */
 export async function connect(config: SnowflakeConfig): Promise<snowflake.Connection> {
   if (connection) {
     return connection;
   }
 
-  return new Promise((resolve, reject) => {
-    const conn = snowflake.createConnection({
-      account: config.account,
-      username: config.username,
-      authenticator: config.authenticator.toUpperCase(),
-      warehouse: config.warehouse,
-      database: config.database,
-      role: config.role,
-      clientSessionKeepAlive: true,
-    });
+  const conn = snowflake.createConnection({
+    account: config.account,
+    username: config.username,
+    authenticator: config.authenticator.toUpperCase(),
+    warehouse: config.warehouse,
+    database: config.database,
+    role: config.role,
+    clientSessionKeepAlive: true,
+  });
 
-    conn.connect((err, conn) => {
+  // Use connectAsync() for external browser/Okta authentication
+  // It requires a callback but also returns a promise
+  return new Promise<snowflake.Connection>((resolve, reject) => {
+    conn.connectAsync((err) => {
       if (err) {
         reject(new Error(`Snowflake connection failed: ${err.message}`));
       } else {
@@ -86,10 +89,12 @@ export async function executeQuery<T = Record<string, unknown>>(
  * Get list of schemas in a database
  */
 export async function getSchemas(database: string): Promise<string[]> {
-  const rows = await executeQuery<{ SCHEMA_NAME: string }>(
+  // SHOW SCHEMAS returns columns like: name, database_name, owner, etc.
+  const rows = await executeQuery<{ name: string }>(
     `SHOW SCHEMAS IN DATABASE "${database}"`
   );
-  return rows.map((r) => r.SCHEMA_NAME);
+  // Filter out any undefined/null values and return schema names
+  return rows.map((r) => r.name).filter((name): name is string => !!name);
 }
 
 /**
@@ -106,6 +111,54 @@ export async function getTables(
      ORDER BY TABLE_NAME`
   );
   return rows.map((r) => ({ name: r.TABLE_NAME, type: r.TABLE_TYPE }));
+}
+
+/**
+ * Basic table info returned from getAllTables
+ */
+export interface TableInfo {
+  database: string;
+  schema: string;
+  name: string;
+  type: "TABLE" | "VIEW" | "EXTERNAL TABLE" | "MATERIALIZED VIEW";
+}
+
+/**
+ * Get all tables and views from a database, excluding dev/test schemas
+ * 
+ * @param database - The database to query (e.g., PROD_RIPPLING_DWH)
+ * @param excludePatterns - Schema name patterns to exclude (default: _DEV, _TEST)
+ */
+export async function getAllTables(
+  database: string,
+  excludePatterns: string[] = ["_DEV", "_TEST"]
+): Promise<TableInfo[]> {
+  // Build exclusion clause for schema patterns
+  const patternExclusions = excludePatterns
+    .map((p) => `TABLE_SCHEMA NOT LIKE '%${p}%'`)
+    .join(" AND ");
+
+  const sql = `
+    SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE
+    FROM "${database}".INFORMATION_SCHEMA.TABLES
+    WHERE TABLE_SCHEMA != 'INFORMATION_SCHEMA'
+    ${patternExclusions ? `AND ${patternExclusions}` : ""}
+    ORDER BY TABLE_SCHEMA, TABLE_NAME
+  `;
+
+  const rows = await executeQuery<{
+    TABLE_CATALOG: string;
+    TABLE_SCHEMA: string;
+    TABLE_NAME: string;
+    TABLE_TYPE: string;
+  }>(sql);
+
+  return rows.map((r) => ({
+    database: r.TABLE_CATALOG,
+    schema: r.TABLE_SCHEMA,
+    name: r.TABLE_NAME,
+    type: r.TABLE_TYPE as TableInfo["type"],
+  }));
 }
 
 /**

@@ -38,6 +38,7 @@ import { parseDbtManifest, findManifestPath, parseDbtProjectFallback, buildSqlCo
 import { parseAirflowDags, type ExternalSystemDetection } from "./airflowParser";
 import { parseExternalSystems, KNOWN_EXTERNAL_SYSTEMS } from "./externalParser";
 import { inferExternalSystems, summarizeDetections } from "./externalInference";
+import { parseCensusConfig, normalizeCensusResponse, validateCensusConfig, type CensusConfig } from "./censusParser";
 import { linkCrossRepo } from "./linker";
 import { enrichWithSnowflakeMetadata, discoverSnowflakeTables, getSnowflakeConfig, hasSnowflakeCredentials, type SnowflakeDiscoveryResult } from "./snowflakeMetadata";
 import { connect, getSchemas, disconnect } from "../snowflake/client";
@@ -57,6 +58,8 @@ export interface IndexerConfig {
   dbtPath: string;
   airflowPath: string;
   snowflakeEnabled: boolean;
+  /** Optional Census sync configuration (JSON object or path to JSON file) */
+  censusConfig?: CensusConfig | string;
 }
 
 // Convert domain types to DB types
@@ -188,6 +191,9 @@ export class Indexer {
 
       // Stage 5.5: Infer external destinations from SQL patterns
       await this.stageInferExternalDestinations();
+
+      // Stage 5.6: Parse Census reverse ETL configuration
+      await this.stageParseCensus();
 
       // Stage 6: Snowflake metadata enrichment
       await this.stageSnowflakeMetadata();
@@ -730,6 +736,86 @@ export class Indexer {
       98,
       `Inferred ${newNodesCount} external destinations with ${newEdgesCount} edges`
     );
+  }
+
+  /**
+   * Parse Census sync configuration to create reverse ETL edges.
+   * This captures "loop-back" patterns where mart models feed external pipelines
+   * that write back to Snowflake tables consumed by staging models.
+   */
+  private async stageParseCensus(): Promise<void> {
+    if (!this.config.censusConfig) {
+      return;
+    }
+
+    this.updateProgress("parse_externals", 85, "Processing Census sync configuration...");
+
+    try {
+      let config: CensusConfig;
+
+      // Handle string (file path) or object (already parsed)
+      if (typeof this.config.censusConfig === "string") {
+        const fs = await import("fs");
+        const content = fs.readFileSync(this.config.censusConfig, "utf-8");
+        const parsed = JSON.parse(content);
+        
+        const validation = validateCensusConfig(parsed);
+        if (!validation.valid) {
+          this.log(`⚠️ Invalid Census config: ${validation.error}`);
+          return;
+        }
+        
+        config = normalizeCensusResponse(parsed);
+      } else {
+        config = this.config.censusConfig;
+      }
+
+      const result = parseCensusConfig(
+        config,
+        this.allNodes,
+        (progress, message) => {
+          // Map 0-100 to 85-98
+          const mappedProgress = 85 + Math.round(progress * 0.13);
+          this.updateProgress("parse_externals", mappedProgress, message);
+        }
+      );
+
+      // Add new Census node if created
+      for (const node of result.nodes) {
+        if (!this.allNodes.some(n => n.id === node.id)) {
+          this.allNodes.push(node);
+        }
+      }
+
+      // Add Census edges
+      const existingEdgeKeys = new Set(this.allEdges.map(e => `${e.from}|${e.to}`));
+      for (const edge of result.edges) {
+        const key = `${edge.from}|${edge.to}`;
+        if (!existingEdgeKeys.has(key)) {
+          this.allEdges.push(edge);
+          existingEdgeKeys.add(key);
+        }
+      }
+
+      // Add citations
+      this.allCitations.push(...result.citations);
+
+      // Log results
+      if (result.stats.edgesCreated > 0) {
+        this.log(`Census: Created ${result.stats.edgesCreated} edges from ${result.stats.syncsProcessed} syncs`);
+        if (result.stats.loopBacksDetected > 0) {
+          this.log(`Census: Detected ${result.stats.loopBacksDetected} reverse ETL loop-backs`);
+        }
+      }
+
+      if (result.stats.unmatchedSources.length > 0) {
+        this.log(`Census: ${result.stats.unmatchedSources.length} source models not found: ${result.stats.unmatchedSources.slice(0, 3).join(", ")}${result.stats.unmatchedSources.length > 3 ? "..." : ""}`);
+      }
+
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.log(`⚠️ Census parsing failed: ${msg}`);
+    }
   }
 
   private async stageCrossRepoLink(): Promise<void> {

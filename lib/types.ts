@@ -68,7 +68,7 @@ export interface ColumnInfo {
 }
 
 // Edge types
-export type EdgeType = "ref" | "source" | "sql_dependency" | "dag_edge" | "materialization" | "exposure" | "inferred_exposure";
+export type EdgeType = "ref" | "source" | "sql_dependency" | "dag_edge" | "materialization" | "exposure" | "inferred_exposure" | "reverse_etl";
 
 export interface GraphEdge {
   id: string;
@@ -82,6 +82,9 @@ export interface EdgeMetadata {
   sqlSnippet?: string;
   transformationType?: string;
   inferredFrom?: string;  // How the edge was discovered (e.g., "sql-scan")
+  // Census reverse ETL metadata
+  censusSyncId?: number;
+  censusSyncLabel?: string;
 }
 
 // Group types

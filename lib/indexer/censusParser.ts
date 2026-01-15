@@ -361,7 +361,7 @@ export function validateCensusConfig(data: unknown): { valid: boolean; error?: s
     return { valid: false, error: "Missing 'syncs' or 'data' array in Census config" };
   }
   
-  const syncs = config.syncs || config.data;
+  const syncs = (config.syncs || config.data) as unknown[];
   
   if (syncs.length === 0) {
     return { valid: false, error: "No syncs found in Census config" };

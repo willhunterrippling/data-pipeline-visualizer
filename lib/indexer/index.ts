@@ -742,32 +742,59 @@ export class Indexer {
    * Parse Census sync configuration to create reverse ETL edges.
    * This captures "loop-back" patterns where mart models feed external pipelines
    * that write back to Snowflake tables consumed by staging models.
+   * 
+   * If no censusConfig is provided, attempts to load from data/census.json.
+   * Fails gracefully with a warning if the file is missing or invalid.
    */
   private async stageParseCensus(): Promise<void> {
-    if (!this.config.censusConfig) {
-      return;
-    }
-
     this.updateProgress("parse_externals", 85, "Processing Census sync configuration...");
 
     try {
       let config: CensusConfig;
+      const fs = await import("fs");
 
-      // Handle string (file path) or object (already parsed)
-      if (typeof this.config.censusConfig === "string") {
-        const fs = await import("fs");
-        const content = fs.readFileSync(this.config.censusConfig, "utf-8");
+      if (this.config.censusConfig) {
+        // Handle explicitly provided config (string path or object)
+        if (typeof this.config.censusConfig === "string") {
+          const content = fs.readFileSync(this.config.censusConfig, "utf-8");
+          const parsed = JSON.parse(content);
+          
+          const validation = validateCensusConfig(parsed);
+          if (!validation.valid) {
+            this.log(`⚠️ Invalid Census config: ${validation.error}`);
+            return;
+          }
+          
+          config = normalizeCensusResponse(parsed);
+        } else {
+          config = this.config.censusConfig;
+        }
+      } else {
+        // Try to auto-load from default location: data/census.json
+        const defaultPath = join(process.cwd(), "data", "census.json");
+        
+        if (!fs.existsSync(defaultPath)) {
+          this.log(`ℹ️ Census data file not found at ${defaultPath} - skipping Census integration`);
+          return;
+        }
+        
+        const content = fs.readFileSync(defaultPath, "utf-8");
         const parsed = JSON.parse(content);
+        
+        // Check if the file is just a placeholder (empty syncs array)
+        if (!parsed.syncs || parsed.syncs.length === 0) {
+          this.log(`ℹ️ Census data file is empty - run scripts/export_census_data.py to populate`);
+          return;
+        }
         
         const validation = validateCensusConfig(parsed);
         if (!validation.valid) {
-          this.log(`⚠️ Invalid Census config: ${validation.error}`);
+          this.log(`⚠️ Invalid Census data file: ${validation.error}`);
           return;
         }
         
         config = normalizeCensusResponse(parsed);
-      } else {
-        config = this.config.censusConfig;
+        this.log(`📊 Loaded Census data from ${defaultPath}`);
       }
 
       const result = parseCensusConfig(

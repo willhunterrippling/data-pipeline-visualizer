@@ -179,13 +179,22 @@ export async function POST(request: NextRequest) {
 export async function GET() {
   return NextResponse.json({
     description: "Census Reverse ETL Import",
-    instructions: [
-      "1. Get your Census API token from https://app.getcensus.com/settings/api",
-      "2. Fetch your syncs: curl -H 'Authorization: Bearer YOUR_TOKEN' https://app.getcensus.com/api/v1/syncs > census-syncs.json",
-      "3. Optionally fetch destinations: curl -H 'Authorization: Bearer YOUR_TOKEN' https://app.getcensus.com/api/v1/destinations > census-destinations.json",
-      "4. Merge the files or just use syncs",
-      "5. POST the JSON to this endpoint: curl -X POST http://localhost:3000/api/census -H 'Content-Type: application/json' -d @census-syncs.json",
-    ],
+    autoLoadBehavior: "The indexer automatically loads Census data from data/census.json if present. If the file is missing or empty, Census integration is skipped with a warning.",
+    instructions: {
+      recommended: [
+        "1. Use the Python export script (requires API key):",
+        "   python scripts/export_census_data.py --api-key YOUR_API_KEY",
+        "2. The script saves to data/census.json which is auto-loaded during indexing",
+        "3. Commit data/census.json to your repo for team sharing",
+      ],
+      alternative: [
+        "1. Get your Census API token from https://app.getcensus.com/settings/api",
+        "2. Fetch your syncs: curl -H 'Authorization: Bearer YOUR_TOKEN' https://app.getcensus.com/api/v1/syncs > census-syncs.json",
+        "3. Fetch connections: curl -H 'Authorization: Bearer YOUR_TOKEN' https://app.getcensus.com/api/v1/connections > census-connections.json",
+        "4. Merge the files or use the syncs file directly",
+        "5. Either: save to data/census.json for auto-loading, or POST to this endpoint for one-time import",
+      ],
+    },
     expectedFormat: {
       syncs: [
         {

@@ -45,5 +45,6 @@ next-env.d.ts
 
 # data (SQLite database - local only)
 /data
+!data/census.json
 
 # Note: public/graph-data.json is NOT ignored - it should be committed for Vercel deployment

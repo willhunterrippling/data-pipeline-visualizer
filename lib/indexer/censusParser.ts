@@ -400,5 +400,5 @@ export function normalizeCensusResponse(data: unknown): CensusConfig {
   }
   
   // Assume it's already in the right format
-  return obj as CensusConfig;
+  return obj as unknown as CensusConfig;
 }

@@ -150,15 +150,17 @@ export async function POST(request: NextRequest) {
       success: true,
       stats: {
         syncsProcessed: result.stats.syncsProcessed,
+        matchedSources: result.stats.matchedSources.length,
         edgesCreated: newEdges.length,
         loopBacksDetected: result.stats.loopBacksDetected,
         censusNodeCreated: censusNodeAdded,
+        matchedSourceDetails: result.stats.matchedSources.slice(0, 10), // First 10 for quick view
         unmatchedSources: result.stats.unmatchedSources,
         unmatchedDestinations: result.stats.unmatchedDestinations,
       },
       message: newEdges.length > 0
-        ? `Created ${newEdges.length} reverse ETL edges from ${result.stats.syncsProcessed} Census syncs`
-        : `No new edges created (${result.stats.syncsProcessed} syncs processed, all edges already exist)`,
+        ? `Created ${newEdges.length} reverse ETL edges from ${result.stats.syncsProcessed} Census syncs (${result.stats.matchedSources.length} matched)`
+        : `No new edges created (${result.stats.syncsProcessed} syncs processed, ${result.stats.matchedSources.length} matched, ${result.stats.unmatchedSources.length} unmatched)`,
     });
 
   } catch (error) {

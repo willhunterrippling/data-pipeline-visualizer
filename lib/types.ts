@@ -20,7 +20,10 @@ export type NodeSubtype =
   | "reverse_etl_destination"
   // CRM and marketing platform types
   | "crm"
-  | "marketing";
+  | "marketing"
+  // Census types
+  | "census_sync"
+  | "census_destination";
 
 // Semantic layer classification
 export type SemanticLayer = "source" | "staging" | "intermediate" | "mart" | "report" | "transform" | "external";
@@ -59,6 +62,14 @@ export interface NodeMetadata {
   // Snowflake-specific metadata
   snowflakeType?: string;  // TABLE or VIEW
   snowflakeSchema?: string;
+  // Census sync metadata
+  censusSyncId?: number;
+  sourceQuery?: string;
+  operation?: string;
+  destinationType?: string;
+  destinationObject?: string;
+  connectionType?: string;
+  objectType?: string;
 }
 
 export interface ColumnInfo {
@@ -85,6 +96,8 @@ export interface EdgeMetadata {
   // Census reverse ETL metadata
   censusSyncId?: number;
   censusSyncLabel?: string;
+  destinationType?: string;
+  destinationObject?: string;
 }
 
 // Group types

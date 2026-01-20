@@ -827,16 +827,70 @@ export class Indexer {
       // Add citations
       this.allCitations.push(...result.citations);
 
-      // Log results
-      if (result.stats.edgesCreated > 0) {
-        this.log(`Census: Created ${result.stats.edgesCreated} edges from ${result.stats.syncsProcessed} syncs`);
-        if (result.stats.loopBacksDetected > 0) {
-          this.log(`Census: Detected ${result.stats.loopBacksDetected} reverse ETL loop-backs`);
+      // Log detailed results
+      const matchedCount = result.stats.matchedSources.length;
+      this.log(`📊 Census Summary: ${result.stats.syncsProcessed} syncs processed`);
+      this.log(`   🔄 Sync nodes created: ${result.stats.syncNodesCreated}`);
+      this.log(`   ✅ Source matches: ${matchedCount} → ${result.stats.edgesCreated} source edges`);
+      this.log(`   ❌ Unmatched: ${result.stats.unmatchedSources.length} sources (model names not found in graph)`);
+      
+      if (result.stats.loopBacksDetected > 0) {
+        this.log(`   ↩️ Loop-backs: ${result.stats.loopBacksDetected} reverse ETL cycles to Snowflake`);
+      }
+      
+      // Log destination stats
+      if (result.stats.destinationNodesCreated > 0) {
+        this.log(`   📤 Destination nodes: ${result.stats.destinationNodesCreated} (${result.stats.destinationEdgesCreated} edges)`);
+        this.log(`   📍 Systems: ${result.stats.destinationTypes.join(", ")}`);
+        
+        // Show example sync nodes created
+        const syncNodes = result.nodes.filter(n => n.subtype === "census_sync").slice(0, 3);
+        if (syncNodes.length > 0) {
+          const examples = syncNodes.map(n => n.name).join(", ");
+          this.log(`   📝 Example syncs: ${examples}${result.stats.syncNodesCreated > 3 ? "..." : ""}`);
         }
       }
 
+      // Always write detailed Census matching report
+      const logPath = join(process.cwd(), "data", "logs", "census-matching-report.json");
+      
+      // Ensure logs directory exists
+      const logsDir = join(process.cwd(), "data", "logs");
+      if (!fs.existsSync(logsDir)) {
+        fs.mkdirSync(logsDir, { recursive: true });
+      }
+      
+      fs.writeFileSync(logPath, JSON.stringify({
+        timestamp: new Date().toISOString(),
+        summary: {
+          totalSyncs: result.stats.syncsProcessed,
+          syncNodesCreated: result.stats.syncNodesCreated,
+          matchedSources: matchedCount,
+          unmatchedSources: result.stats.unmatchedSources.length,
+          sourceEdges: result.stats.edgesCreated,
+          loopBacks: result.stats.loopBacksDetected,
+          destinationNodes: result.stats.destinationNodesCreated,
+          destinationEdges: result.stats.destinationEdgesCreated,
+          destinationTypes: result.stats.destinationTypes,
+        },
+        matchedSources: result.stats.matchedSources,
+        unmatchedSources: result.stats.unmatchedSources,
+        unmatchedDestinations: result.stats.unmatchedDestinations,
+      }, null, 2));
+      
+      this.log(`   📝 Full matching report: data/logs/census-matching-report.json`);
+      
+      // Show first few matched for quick reference
+      if (matchedCount > 0) {
+        const examples = result.stats.matchedSources.slice(0, 3)
+          .map(m => `"${m.censusName}" → ${m.matchedNodeName}`)
+          .join(", ");
+        this.log(`   Example matches: ${examples}${matchedCount > 3 ? "..." : ""}`);
+      }
+      
+      // Show first few unmatched for quick reference
       if (result.stats.unmatchedSources.length > 0) {
-        this.log(`Census: ${result.stats.unmatchedSources.length} source models not found: ${result.stats.unmatchedSources.slice(0, 3).join(", ")}${result.stats.unmatchedSources.length > 3 ? "..." : ""}`);
+        this.log(`   First few unmatched: ${result.stats.unmatchedSources.slice(0, 5).join(", ")}${result.stats.unmatchedSources.length > 5 ? "..." : ""}`);
       }
 
     } catch (error) {
